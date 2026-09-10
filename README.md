@@ -131,7 +131,7 @@ python -m eval report             # 聚合评估报告
 | :--- | :--- |
 | 编程语言 | Python 3.11 |
 | 大模型平台 | 阿里云百炼 DashScope（`qwen3.5-plus` / `text-embedding-v2` / `qwen3-rerank`） |
-| Agent 编排 | LangGraph（supervisor-workers）、Function Calling |
+| Agent 编排 | LangGraph（supervisor-workers，主链路）、Function Calling（自研，回退路径） |
 | RAG 组件 | LangChain 生态子包（分块/模型适配/Qdrant 客户端）、Qdrant、BM25（纯 Python）+ RRF |
 | Web 后端 | FastAPI + Uvicorn（REST + SSE 流式） |
 | 前端 | React 19 + Vite + Tailwind CSS（`qa-frontend/`） |

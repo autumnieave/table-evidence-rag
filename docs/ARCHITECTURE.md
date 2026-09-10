@@ -194,11 +194,13 @@ flowchart LR
 分块索引  层级/父子分块 + 向量库 + BM25 混合（可选）
 检索精排  多路召回 + 融合 + Rerank + 引用可溯源
 生成层    Prompt 版本化 + 流式 + 幻觉抑制（引用校验）
-Agent 层  工具注册表 + Function Calling + 规划-执行
+Agent 层  工具注册表 + LangGraph 多 Agent + Function Calling（回退）
 记忆层    短期会话窗口（Redis+TTL）+ 长期用户偏好（DB）
 评估层    golden set 回归 + 多指标（检索/引用/端到端）
 部署层    Docker Compose + 配置中心 + 日志监控
 ```
+
+> **时效标注**：图中 Agent 层为设计分层口径，该口径限于 2026-08-23 对照期；**2026-08-30 起 `.env` 已切 `AGENT_PLANNER_BACKEND=langgraph` + `AGENT_LANGGRAPH_MULTI_AGENT=true`（supervisor-workers 多 Agent 主链路）**，Function Calling 为回退路径，见 `评估报告/MultiAgent对照.md`。
 
 ### 8.2 差距清单
 

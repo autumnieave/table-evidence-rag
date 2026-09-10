@@ -5,6 +5,8 @@
 > 2026-08-23 · 实验：#9 Agent 编排后端对照。原则：**同 prompt、同 tools、同工具执行、同输出契约，只换编排层**。
 
 
+> **时效标注**：该描述限于 2026-08-23 对照期；**2026-08-30 起 `.env` 已切 `AGENT_PLANNER_BACKEND=langgraph` + `AGENT_LANGGRAPH_MULTI_AGENT=true`（supervisor-workers 多 Agent 主链路）**，见 `MultiAgent对照.md`。
+
 项目主链路 Agent 为自研 `AgentPlanner`（while 循环 + Function Calling）。为对齐市场对 **LangChain/LangGraph 框架熟练度**的要求，新增 `LangGraphPlanner`（StateGraph 显式状态机）做对照验证，回答"用 LangGraph 重写 Agent 会怎样、值不值"。
 
 

@@ -69,4 +69,4 @@ aggregator 缺引用时代码兜底合并（按 paper_path 去重）/ 默认关�
 
 
 - 单 Agent 对照：`docs/评估报告/LangGraph对照.md`（StateGraph 版 + checkpoint 持久化）
-- 自研主链路：`agents/planner.py`（`AgentPlanner`，Function Calling 循环）
+- 自研**回退路径**：`agents/planner.py`（`AgentPlanner`，Function Calling 循环）。**时效标注**：该表述限于 2026-08-23 对照期；**2026-08-30 起 `.env` 已切 `AGENT_PLANNER_BACKEND=langgraph` + `AGENT_LANGGRAPH_MULTI_AGENT=true`（supervisor-workers 多 Agent 主链路）**。
