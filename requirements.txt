@@ -25,3 +25,5 @@ pydantic>=2.0.0
 # 数据与校验（SQL 静态校验 / MySQL 编译 / golden set）
 pymysql>=1.1.0
 sqlparse>=0.5.0
+
+# 潜在冗余（待确认后清理）：langchain（全仓无 import）、tenacity、sse-starlette、python-multipart

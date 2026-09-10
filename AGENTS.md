@@ -10,23 +10,44 @@ RAG 金融研报智能问数系统：基于检索增强生成（RAG）的上市�
 
 | 模块 | 职责（一句话） |
 | --- | --- |
-| `config/` | 全局配置：`RAGConfig`（模型/路径/检索/引用校验参数，唯一配置源，含组件工厂与 `get_config()` 单例）；`langchain_config.py` 仅为兼容层（`EmbeddingClientAdapter` + 别名），下一阶段删除 |
-| `prompts/` | 唯一 Prompt 目录：`rag.py`（RAG 问答，手写/LCEL 同源）、`pipeline.py`（字段提取/摘要/图片检测）、`agent.py`（Agent system prompt）；新增 Prompt 一律放此，修改后更新 `PROMPT_VERSION` |
-| `core/` | 链路收敛接口：`interfaces.py`（`IRetriever/IReranker/IGenerator` 三协议）、`retrievers.py`（`HandwrittenRetriever` 默认 / `LangChainRetriever` 实验）、`rerankers.py` + `generators.py`（适配层） |
-| `eval/` | 评估闭环：`golden.py`（golden set 版本化，`database/golden/`，本地资产不入库）、`runner.py`（`python -m eval` 统一入口：golden/sql/citation/report）、`metrics.py`（报告聚合） |
+| `config/` | 全局配置：`RAGConfig`（模型/路径/检索/引用校验参数，唯一配置源，含组件工厂与 `get_config()` 单例）；`EmbeddingClientAdapter` 已并入本模块（原兼容层 `langchain_config.py` 已删除） |
+| `prompts/` | 唯一 Prompt 目录：`rag.py`（RAG 问答，手写/LCEL 同源）、`pipeline.py`（字段提取/摘要/图片检测）、`agent.py`（Agent system prompt）、`financial.py`（SQL 生成）/ `multi_agent.py`（supervisor-workers）、`fallback.py`（兜底话术）、`examples/`（few-shot 示例库）、`registry.json`（版本注册表，**唯一事实源**）；新增 Prompt 一律放此，修改后同步 registry 版本 |
+| `core/` | 链路收敛接口：`interfaces.py`（`IRetriever/IReranker/IGenerator` 三协议）、`retrievers.py`（`HandwrittenRetriever` 自研基线=代码默认 / `HybridRetriever` 混合检索（`.env` `HYBRID_ENABLED=true` 时启用，**当前运行环境即此**）/ `LangChainRetriever` 对照实验）、`rerankers.py` + `generators.py`（适配层） |
+| `eval/` | 评估闭环：`golden.py`（golden set 版本化，`database/golden/`，本地资产不入库）、`runner.py`（`python -m eval` 统一入口：golden / sql / citation / report / **llm-judge / challenge / consistency**）、`metrics.py`（报告聚合）、`answer_keys.py`（答案先验三态登记）、`llm_judge.py`（LLM-as-judge）、`consistency.py`（同题一致率）、`retrieval_metrics.py`（Recall@K / MRR）、`challenge.py`（对抗挑战集 v2） |
 | `data/` | 研报 Markdown 加载、Excel 元数据匹配、文本分块与 HTML/Markdown 表格抽取 |
 | `embeddings/` | `EmbeddingClient`：通过 DashScope HTTP API 生成向量（text-embedding-v2，1536 维） |
 | `vectorstore/` | `QdrantClientWrapper`：Qdrant 集合读写、检索、清空封装 |
 | `chains/` | `LangChainRAGChain`（LCEL 完整链路）、`RerankClient`（qwen3-rerank 精排）；Prompt 已移至 `prompts/` |
 | `llm/` | `LLMGenerator`：答案生成与流式输出（qwen3.5-plus） |
-| `agents/` | `AgentPlanner`：Function Calling 多步推理，调用工具并整合 JSON 输出 |
+| `agents/` | `langgraph_multi_agent.py`（**当前主链路**：supervisor-workers 多 Agent，规划→财务/研报子 Agent 并行→汇总）、`langgraph_planner.py`（StateGraph 单 Agent 对照）、`planner.py`（`AgentPlanner`：Function Calling 多步推理，**回退路径**）；运行链路由 `AGENT_PLANNER_BACKEND` + `AGENT_LANGGRAPH_MULTI_AGENT` 决定（代码默认 handwritten，当前 `.env` 为 langgraph 多 Agent） |
 | `memory/` | `ConversationState` / `ClarifyStatus`（多轮对话状态、澄清标记）+ `store.py`（记忆持久化：SQLite 默认 / Redis 可选，按 `user_id` 存取，TTL 过期） |
 | `filters/` | `QueryFilters`：查询条件软过滤（匹配得分排序，不做硬过滤） |
 | `pipelines/` | `RAGPipeline`：全流程编排（build_index / query / agent_query / conversational_query / 增量插入） |
 | `scripts/` | 交互式问答入口：`interactive_mode` / `main`（含 CLI 参数解析） |
 | `app/` | FastAPI 入口包：`api.py`（路由/SSE/静态挂载）、`schemas.py`（请求响应模型）；`uvicorn app.api:app` |
-| `tools/` | Agent 工具注册表（`tools_registry.py`）、原生财务查询（`native_financial.py`：SQL 生成→MySQL 执行→分析→ECharts）、SQL 校验守卫（`sql_guard.py`）；`tools/data_scripts/` 存放数据处理脚本（pdf处理+校验入库/重抽取/batch_test/list_files） |
+| `tools/` | Agent 工具注册表（`tools_registry.py`）、原生财务查询（`native_financial.py`：SQL 生成→MySQL 执行→分析→ECharts）、SQL 校验守卫（`sql_guard.py`）；`tools/typo_normalizer.py`（错别字归一化）；`tools/data_scripts/` 存放数据处理脚本（pdf处理+校验入库/重抽取/batch_test/list_files） |
 | `utils/` | 通用工具：表格聚合、摘要生成、引用构建（`helpers.py`） |
+
+### 补充登记（2026-09-10 核对：模块速览遗漏项）
+
+| 路径 / 开关 | 说明 |
+| --- | --- |
+| `eval/answer_keys.py` | 答案先验登记（`has_data` / `no_data` / `unknown`）+ 只读复算，供 judge 判「应有数据却拒答」（B-36） |
+| `eval/llm_judge.py` | LLM-as-judge 评测（`python -m eval llm-judge`，支持 `--answer-key` / `--no-prior` / `--rejudge`） |
+| `eval/consistency.py` | 同题多次生成一致率（结构指纹 / 数值 IoU / 引用 Jaccard） |
+| `eval/retrieval_metrics.py` | 检索质量指标 Recall@K / Precision@K / MRR（B-24A） |
+| `eval/challenge.py` | 对抗挑战集 v2（18 条 / 5 类，`python -m eval challenge --run` / `--rejudge`） |
+| `prompts/registry.json` | Prompt 版本注册表（唯一事实源；防漂移单测 `tests/test_prompt_registry.py`） |
+| `prompts/fallback.py` | 兜底话术模板（refuse / suggest / human 三层，B-18） |
+| `prompts/examples/` | few-shot 示例库（B-15 静态 + B-16 动态检索注入 SQL_GEN） |
+| `agents/langgraph_planner.py` | LangGraph StateGraph 单 Agent 编排（对照实验） |
+| `agents/langgraph_multi_agent.py` | **当前主链路**：supervisor-workers 多 Agent 协作 |
+| `tools/typo_normalizer.py` | 错别字归一化（对抗挑战集 B-28 修复） |
+| `utils/output_contracts.py` | 输出契约校验（B-17，四类校验 + 事件落盘） |
+| `utils/query_cache.py` | SQLite 查询缓存（并行/缓存路线 1，2026-08-30） |
+| `.github/workflows/ci-layered.yml` | 分层 CI（L1 必过 / L2 默认关 / L3 nightly 占位，B-21A） |
+| `tests/test_api_contracts.py` | API 契约 + SSE 事件序列测试（B-19） |
+| `AGENT_PLANNER_BACKEND` / `AGENT_LANGGRAPH_MULTI_AGENT` | 决定运行链路的两个 env 开关（代码默认 handwritten；当前 `.env` 为 langgraph + multi-agent=true） |
 
 ## 目录结构（2026-08 整理后）
 
