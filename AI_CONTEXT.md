@@ -6,8 +6,8 @@
 
 - 上市公司“智能问数”助手：用户用自然语言查财务数据（SQL 链路）与问研报观点（RAG 链路），答案带引用溯源，由 LangGraph supervisor-workers 多 Agent 编排（财务 / 研报子 Agent 并行）。
 - 技术栈：Python 3.11 + FastAPI（REST / SSE）+ React 前端 + LangGraph + Qdrant + MySQL + SQLite 记忆；模型与 Embedding 走 DashScope（qwen3.5-plus / qwen3-rerank / text-embedding-v2）。
-- 近 10 次提交主线：B-13 prompts 版本注册表 → B-14 三层结构 → B-15/16 few-shot 与动态检索 → B-17 输出契约 → B-18 兜底话术 → B-19/20 API 契约与覆盖率门禁 → B-22 对抗挑战集 v2（18 条/5 类，真实执行 + 人工抽审）→ B-26~B-29 挑战集暴露缺陷修复（supervisor 误拒答 / 注入先拒答 / 错别字归一化 / 研报预测荐股转述口径）→ B-31 库外指标统一出口（unsupported_metrics + refuse.metric_out_of_scope，C2007/C2016/C2017 闭环）→ B-30 指标-问题一致性校验（SELECT 指标列 ⊆ standard_fields，越界走 refuse.metric_mismatch）。
-- 离线单测 **416 passed**（34 个 test_*.py + conftest，零外部依赖；`ruff check .` 零违规，规则集 E9/F63/F7/F82）；挑战集证据支持 `python -m eval challenge --rejudge` 零成本重判（不重跑 LLM），人工复核存 sidecar（训练结果数据/challenge_v2_review.json）；竞赛原始数据与 golden 基准本地保留、不入库。
+- 近 10 次提交主线：B-13 prompts 版本注册表 → B-14 三层结构 → B-15/16 few-shot 与动态检索 → B-17 输出契约 → B-18 兜底话术 → B-19/20 API 契约与覆盖率门禁 → B-22 对抗挑战集 v2（18 条/5 类，真实执行 + 人工抽审）→ B-26~B-29 挑战集暴露缺陷修复（supervisor 误拒答 / 注入先拒答 / 错别字归一化 / 研报预测荐股转述口径）→ B-31 库外指标统一出口（unsupported_metrics + refuse.metric_out_of_scope，C2007/C2016/C2017 闭环）→ B-30 指标-问题一致性校验（SELECT 指标列 ⊆ standard_fields，越界走 refuse.metric_mismatch）→ **B-33 金额列单位口径修复**（同单位两列误乘 ×10000 致区间筛选恒 0 行；financial v10 / 包级 v6；80 题回归 103/103）→ **B-36 答案先验校验**（「应有数据」三态 + 只读复算，B2053 同题 n=5 误拒答 4/5 → 0/5；**451 passed**）。
+- 离线单测 **451 passed**（36 个 test_*.py + conftest，零外部依赖；`ruff check .` 零违规，规则集 E9/F63/F7/F82）；挑战集证据支持 `python -m eval challenge --rejudge` 零成本重判（不重跑 LLM），人工复核存 sidecar（训练结果数据/challenge_v2_review.json）；竞赛原始数据与 golden 基准本地保留、不入库。
 - 评估入口（`python -m eval`）新增三件阶段 A 能力：`consistency`（同题 n 次真实重复生成，量化结构指纹 / 数值 IoU / 引用 Jaccard 三层面一致性，`--reuse` 可复用既有产物）、`llm-judge`（四判据判定 + 与规则信号交叉出「分歧样本清单」）、以及 `tools/data_scripts/hallucination_audit.py`（幻觉回查底稿：数值清单 CSV + 引用存在性比对）；CI 侧新增 `.github/workflows/ci-layered.yml`（L1 pytest+ruff 必过 / L2 默认关闭 / L3 nightly 占位）+ `scripts/ci_golden_subset.py` + `scripts/ci_compose_smoke.ps1`。
 - 一致性基线（2026-09-10，10 题 × n=5）：数值 IoU 均值 **0.5111**（完全一致 0/10）、引用 Jaccard 均值 **0.7798**（7/10）、结构指纹一致率 **0.72**（3/10）、拒答判定不一致 4/10、SQL 输出契约通过率 **1.0**；judge 50 条 pass 33 / fail 17，与规则一致率 **0.8571**，分歧样本 **17 条**——**judge 未校准，不得作为对外结论**。检索层指标脚本 `eval/retrieval_metrics.py`（Recall@K / Precision@K / MRR）+ 30 题 × 10 片段预标注已就位，正式指标待人工审核（B-24B）。
 
@@ -18,7 +18,7 @@
 - 缓存与记忆基础设施（utils/query_cache.py、memory/store.py 的 SQLite 后端）——有独立单测（test_query_cache / test_memory / test_pipeline_memory）覆盖。
 - 分块与表聚合（data/splitter.py、utils/helpers.py + test_splitter / test_table_agg_topk）——overlap=100 经 5 档对比实验固化，代码 / config / pipeline 三处口径统一。
 - 离线评估入口（eval/runner + golden v1：80 题 / 108 子问题 / 291 句，不可变快照 + sha256 防篡改；golden v2 对抗挑战集 18 条/5 类，2026-09-10 按 B-29 方案 B 修订 C2018 后重固化）。
-- prompts 版本注册表（prompts/registry.json，7 条登记：6 业务模块 + 包级；当前包级 2026-09-10-v6、multi_agent v3、fallback v4、financial v9）+ 防漂移单测（tests/test_prompt_registry.py）。
+- prompts 版本注册表（prompts/registry.json，7 条登记：6 业务模块 + 包级；当前包级 2026-09-10-v6、financial v10、multi_agent v3、fallback v3、agent/rag/pipeline v1）+ 防漂移单测（tests/test_prompt_registry.py）。
 - 出口守卫族（agents/langgraph_multi_agent.py：`_guard_injection_prefix` 注入先拒答、`_guard_research_advice` 研报预测/评级转述口径 + 免责）+ 单测 27 例。
 
 ## 3. 风险与债务清单
@@ -41,5 +41,5 @@
 - 将数据脚本长 Prompt 收口到 prompts/（至少登记版本与用途），并明确 Redis 是否启用——不启用则在文档标注“代码支持、环境未落地”。
 - 指标库内外判定波动（B-32：B2075/B2069 全量判库外拒答、复跑可出数）与挑战集 pending 项（仅剩绑定 3 条，恒 pending）在 B-25 LLM-judge 与人工双回查对齐 ≥90% 后启用自动判定（§6.7.3）。
 - 改动财务链路时除既有回归集外，另看 output_contract_stats.jsonl 的 kind=metric_consistency 命中率（计划↔SQL 字段差异，供人工判定是欠规范还是替换）。
-- **下一优先项（按优先级）**：① **B-36**（P0，误拒答 + judge「应有数据」先验）→ ② **B-35**（P1，7 处 F821 与 `/chat/clarify` NameError）→ ③ B-33/B-32（区间筛选漏查、运行间判定波动）→ ④ B-23B/B-24B/B-25B 三件人工阶段 B（幻觉回查 313 数值、标注 30 题预标注、分歧样本先根因分类再定 `0.85~0.90` 阈值）。
+- **下一优先项（按优先级）**（B-36 已于 2026-09-10 闭环，不再列入）：① **B-35**（P1，7 处 F821 未定义名 + `/chat/clarify` 的 `question` NameError，**该接口当前必崩**；修完需全量 pytest 无回归）→ ② **B-37 / B-32**（分析层计数硬约束；指标库内外判定波动 n=3 一致率基线）→ ③ **B-34**（库外指标漏标样本固化）→ ④ 四件人工阶段 B：**B-21B**（CI secret 放行 / 月度 LLM 预算 / 启用哪几层）、**B-23B**（双人核对 313 数值与幻觉判定）、**B-24B**（审核 30 题预标注 + 定义「相关性」）、**B-25B**（17 条分歧样本先根因分类再定一致率阈值）。
 - 改 judge 或一致性套件后：改 prompt 必须重跑并保留前一版产物（本轮已留 `prompt_v0_截断证据_judge_results.json` 作校准对比），否则一致率数字无法解释来源。

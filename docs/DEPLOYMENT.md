@@ -95,7 +95,7 @@ docker compose down -v                     # 停止并清理数据卷（慎用�
 | `BM25_INDEX_PATH` | `database/bm25_index.pkl` | BM25 缓存路径（按 集合名+点数 自动重建） |
 | `CITATION_CORPUS_ROOT` | `<数据根目录>/全部数据/正式数据/附件5：研报数据` | L1 引用核验语料根目录（正式数据全量 473 篇） |
 | `CITATION_MATCH_MODE` | `comma` | 引用数字匹配口径（raw / comma / loose） |
-| `AGENT_PLANNER_BACKEND` | `handwritten` | Agent 规划器后端：`handwritten`（自研，默认）/ `langgraph`（实验对照） |
+| `AGENT_PLANNER_BACKEND` | 代码默认 `handwritten`；**当前运行环境通过 `.env` 设为 `langgraph`** | Agent 规划器后端：`handwritten`（自研，回退路径）/ `langgraph`（LangGraph 编排）。当前环境配合 `AGENT_LANGGRAPH_MULTI_AGENT=true` 运行 supervisor-workers 多 Agent 主链路 |
 | `AGENT_ENABLE_THINKING` | `false` | Agent 循环思考模式（推理模型默认关闭，避免耗尽 max_tokens） |
 | `AGENT_SQL_VALIDATE` | `true` | SQL 输出守卫开关（静态校验 + MySQL 编译，失败带错误提示重问） |
 | `AGENT_NATIVE_RETRY` | `2` | 原生 SQL 生成失败重试次数 |
