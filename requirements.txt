@@ -12,10 +12,10 @@ openpyxl>=3.1.0
 beautifulsoup4>=4.12.0
 httpx>=0.27.0
 sse-starlette>=2.0.0
-# LangChain 生态
-langchain>=1.0.0
+# LangChain 生态（以下各子包在使用；门面包 langchain 未使用）
+langchain>=1.0.0                # 门面包未使用（全仓无 import），仅生态子包在用；待确认后清理
+langchain-core>=0.3.0           # 显式声明（消除传递依赖风险；6 处直接 import）
 langchain-community>=0.3.0
-langchain-dashscope>=0.1.0
 langchain-qdrant>=0.2.0
 langchain-openai>=0.1.0
 langchain-text-splitters>=0.3.0
@@ -26,4 +26,5 @@ pydantic>=2.0.0
 pymysql>=1.1.0
 sqlparse>=0.5.0
 
-# 潜在冗余（待确认后清理）：langchain（全仓无 import）、tenacity、sse-starlette、python-multipart
+# 潜在冗余（待确认后清理）：langchain（全仓无 import，门面包）、tenacity、sse-starlette、python-multipart
+# 已移除：langchain-dashscope（0 直接 import，且 DashScopeRerank 不依赖它）
