@@ -176,6 +176,12 @@ class RAGConfig:
     """SQL 生成前是否先做指标标准化小调用（问题→JSON，B-12 两步分解第 1 步；env AGENT_METRIC_STANDARDIZE=false 关闭并回退旧自选路径）"""
     AGENT_DYNAMIC_FEWSHOT: bool = field(default_factory=lambda: _env("AGENT_DYNAMIC_FEWSHOT", "false").lower() == "true")
     """SQL 生成是否启用动态 few-shot 示例库（B-16：命中 prompts/examples 注入 SQL_GEN；默认关以便与静态基线对照与回退，env AGENT_DYNAMIC_FEWSHOT=true 开启）"""
+    AGENT_FEWSHOT_MODE: str = field(default_factory=lambda: _env("AGENT_FEWSHOT_MODE", "").strip().lower())
+    """SQL 生成 few-shot 三态开关（B-39 三组对照）：none=不注入示例 | static=固定示例（不检索）| dynamic=按题型检索注入；留空则回退旧布尔开关 AGENT_DYNAMIC_FEWSHOT（true→dynamic / false→none）"""
+    AGENT_FEWSHOT_STATIC_K: int = field(default_factory=lambda: int(_env("AGENT_FEWSHOT_STATIC_K", "2")))
+    """static 模式固定示例条数（默认 2，与 dynamic 的 k=2 对齐以控制 token 量可比）"""
+    AGENT_FEWSHOT_STATIC_STRATEGY: str = field(default_factory=lambda: _env("AGENT_FEWSHOT_STATIC_STRATEGY", "per_type").strip().lower())
+    """static 模式固定示例取法：per_type=每题型各 1 条（默认，类型多样但不检索）| head=按题型文件序取前 k 条"""
     MYSQL_HOST: str = field(default_factory=lambda: _env("MYSQL_HOST", "127.0.0.1"))
     """MySQL 地址（SQL 校验 schema / 编译终审用）"""
     MYSQL_PORT: int = field(default_factory=lambda: int(_env("MYSQL_PORT", "3306")))

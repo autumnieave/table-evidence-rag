@@ -4,6 +4,9 @@
 
 设计（方案 §3.5.4）：先规则命中 top-k，后续可演进为向量召回；命中失败/开关关闭时
 回退静态提示词（SQL_GEN_SYSTEM_PROMPT 原样），保证行为可回退、可对照。
+
+B-39 三态：`AGENT_FEWSHOT_MODE` = none / static / dynamic（static=固定示例不检索，dynamic=按题型检索），
+供「动态 few-shot 是否真有价值」的三组对照实验复用（工具 `tools/data_scripts/few_shot_value_experiment.py`）。
 纯逻辑模块，零外部依赖（不调 LLM/MySQL），可离线单测。
 """
 
@@ -48,6 +51,57 @@ def load_examples() -> List[Dict[str, Any]]:
             entry["_file"] = file_key
             examples.append(entry)
     return examples
+
+
+#: B-39 三态取值（none=不注入；static=固定示例；dynamic=按题型检索注入）
+VALID_MODES: Tuple[str, ...] = ("none", "static", "dynamic")
+
+
+def resolve_mode(enabled: bool = True, mode: Optional[str] = None) -> str:
+    """把「三态 mode」与「旧布尔开关 enabled」归一成 none/static/dynamic（B-39）。
+
+    Args:
+        enabled: 旧布尔开关（AGENT_DYNAMIC_FEWSHOT）：True→dynamic、False→none。
+        mode: 三态取值；非法/空值时回退 enabled 口径（保持旧行为可回退）。
+
+    Returns:
+        "none" / "static" / "dynamic" 之一。
+    """
+    if mode:
+        resolved = str(mode).strip().lower()
+        if resolved in VALID_MODES:
+            return resolved
+        logger.warning("未知 few-shot 模式 %r，回退 enabled 口径", mode)
+    return "dynamic" if enabled else "none"
+
+
+def load_static_examples(k: int = 2, strategy: str = "per_type") -> List[Dict[str, Any]]:
+    """固定示例集（与问题无关）——static 对照组的输入（B-39）。
+
+    Args:
+        k: 取多少条（默认 2，与 dynamic 的 k=2 对齐，控制两组 token 量可比）。
+        strategy: "per_type"（默认）=每题型各 1 条、最多 k 条（类型多样但不检索）；
+            "head"=按题型文件序 + 行序取前 k 条（同题型连号）。
+
+    Returns:
+        示例列表（顺序确定：load_examples 已按文件名排序）。
+    """
+    if k <= 0:
+        return []
+    pool = load_examples()
+    if strategy == "per_type":
+        picked: List[Dict[str, Any]] = []
+        seen: set = set()
+        for entry in pool:
+            key = entry.get("_file")
+            if key in seen:
+                continue
+            seen.add(key)
+            picked.append(entry)
+            if len(picked) >= k:
+                break
+        return picked
+    return pool[:k]
 
 
 def predict_type(question: str, metric_plan: Optional[Dict[str, Any]]) -> str:
@@ -155,16 +209,33 @@ _default_retriever = FewShotRetriever()
 
 
 def build_sql_gen_system(
-    question: str, metric_plan: Optional[Dict[str, Any]], enabled: bool
+    question: str,
+    metric_plan: Optional[Dict[str, Any]],
+    enabled: bool = True,
+    mode: Optional[str] = None,
+    static_k: int = 2,
+    static_strategy: str = "per_type",
 ) -> Tuple[str, List[Dict[str, Any]]]:
-    """构造 SQL_GEN system 内容：启用且命中示例时追加 few-shot，否则返回静态提示词原样。
+    """构造 SQL_GEN system 内容（B-16 动态注入 / B-39 三态对照）。
+
+    Args:
+        question: 重构后的问题。
+        metric_plan: 指标标准化 JSON（为空时不注入任何示例，保持旧行为）。
+        enabled: 旧布尔开关（mode 为空时生效）。
+        mode: none=不注入 | static=固定示例（不检索）| dynamic=按题型检索注入。
+        static_k: static 模式的固定示例条数。
+        static_strategy: static 模式取法（per_type 默认 / head）。
 
     Returns:
-        (system_content, 命中的示例列表；未启用/未命中时列表为空且内容=静态提示词)
+        (system_content, 注入的示例列表；none/未命中时列表为空且内容=静态提示词)
     """
-    if not enabled or not metric_plan:
+    resolved = resolve_mode(enabled=enabled, mode=mode)
+    if resolved == "none" or not metric_plan:
         return SQL_GEN_SYSTEM_PROMPT, []
-    examples = _default_retriever.retrieve(question, metric_plan)
+    if resolved == "static":
+        examples = load_static_examples(k=static_k, strategy=static_strategy)
+    else:
+        examples = _default_retriever.retrieve(question, metric_plan)
     if not examples:
         return SQL_GEN_SYSTEM_PROMPT, []
     suffix = format_examples(examples)

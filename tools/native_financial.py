@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -56,6 +57,65 @@ _ADVICE_RISK_KEYWORDS: Tuple[str, ...] = (
 _FIELD_ERROR_MARKERS: Tuple[str, ...] = (
     "无可用字段", "字段不存在", "Unknown column", "白名单", "字段-表归属", "字段不属于",
 )
+
+
+class _GenStats:
+    """SQL 生成环节的最近一次调用记录（B-39 对照实验用，只读观测、不影响主链路）。
+
+    记录「尝试次数 / 首次是否通过 / few-shot 模式 / 注入示例数 / 是否成功」，
+    便于实验侧统计「首次生成成功率」而无需额外调用 LLM（每问每题只跑 1 次）。
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._last: Dict[str, Any] = {}
+
+    def record(
+        self,
+        *,
+        attempts: int,
+        first_ok: bool,
+        mode: str,
+        injected: int,
+        ok: bool,
+        reason: str = "",
+        sql: str = "",
+    ) -> None:
+        """记录一次 _generate_sql 调用结果（sql=本次最后一次 LLM 输出，便于结构核验）。"""
+        with self._lock:
+            self._last = {
+                "attempts": attempts,
+                "first_ok": bool(first_ok),
+                "mode": mode,
+                "injected": int(injected),
+                "ok": bool(ok),
+                "reason": reason,
+                "sql": (sql or "")[:8000],
+            }
+
+    def last(self) -> Dict[str, Any]:
+        """返回最近一次调用记录（无记录时为空 dict）。"""
+        with self._lock:
+            return dict(self._last)
+
+
+_gen_stats_instance = _GenStats()
+
+
+def _gen_stats() -> _GenStats:
+    """模块级 SQL 生成记录器（实验/回归侧读取）。"""
+    return _gen_stats_instance
+
+
+def _resolve_few_shot_mode(rag: Any) -> str:
+    """解析当前 few-shot 模式（B-39）：AGENT_FEWSHOT_MODE 优先，留空回退 AGENT_DYNAMIC_FEWSHOT。"""
+    from utils.few_shot_retriever import resolve_mode
+
+    cfg = getattr(rag, "config", None)
+    mode = getattr(cfg, "AGENT_FEWSHOT_MODE", "") if cfg is not None else ""
+    enabled = bool(getattr(cfg, "AGENT_DYNAMIC_FEWSHOT", False)) if cfg is not None else False
+    return resolve_mode(enabled=enabled, mode=mode or None)
+
 
 
 def unsupported_metrics_of(metric_plan: Optional[Dict[str, Any]]) -> List[str]:
@@ -622,16 +682,27 @@ def _generate_sql(
     scope_metrics = unsupported_metrics_of(metric_plan)
     if scope_metrics:
         # B-31：库内无对应字段 → 不再自由生成 SQL（避免生成非法 SQL 后回落技术性报错）
+        _gen_stats().record(attempts=0, first_ok=False, mode="none", injected=0, ok=False, reason="out_of_scope")
         return "", ["库外指标（库内无对应字段）: " + "、".join(scope_metrics)]
     plan_text = _metric_plan_to_text(metric_plan)
-    fs_enabled = bool(getattr(getattr(rag, "config", None), "AGENT_DYNAMIC_FEWSHOT", False))
-    if fs_enabled:
+    fs_mode = _resolve_few_shot_mode(rag)
+    sql_gen_system = SQL_GEN_SYSTEM_PROMPT
+    fs_examples: List[Dict[str, Any]] = []
+    if fs_mode != "none":
         from utils.few_shot_retriever import build_sql_gen_system
 
-        fs_system, fs_examples = build_sql_gen_system(question, metric_plan, enabled=True)
+        cfg = getattr(rag, "config", None)
+        sql_gen_system, fs_examples = build_sql_gen_system(
+            question,
+            metric_plan,
+            mode=fs_mode,
+            static_k=int(getattr(cfg, "AGENT_FEWSHOT_STATIC_K", 2) or 2),
+            static_strategy=str(getattr(cfg, "AGENT_FEWSHOT_STATIC_STRATEGY", "per_type") or "per_type"),
+        )
         if fs_examples:
-            logger.info("原生财务查询：动态 few-shot 命中 %d 条示例（B-16）", len(fs_examples))
+            logger.info("原生财务查询：few-shot(%s) 注入 %d 条示例（B-16/B-39）", fs_mode, len(fs_examples))
     errors: List[str] = []
+    last_sql = ""
     for attempt in range(retries + 1):
         user_content = f"重构后的问题: {question}\n指标标准化结果(JSON): {plan_text}"
         if errors:
@@ -640,7 +711,7 @@ def _generate_sql(
             resp = rag.llm_generator.client.chat.completions.create(
                 model=rag.config.LLM_MODEL,
                 messages=[
-                    {"role": "system", "content": fs_system if fs_enabled else SQL_GEN_SYSTEM_PROMPT},
+                    {"role": "system", "content": sql_gen_system},
                     {"role": "user", "content": user_content},
                 ],
                 temperature=0.1,
@@ -651,6 +722,7 @@ def _generate_sql(
             sql = sql.strip("`")
             if sql.lower().startswith("sql"):
                 sql = sql[3:].lstrip()
+            last_sql = sql
         except Exception as exc:  # noqa: BLE001
             errors.append(f"LLM 调用失败: {exc}")
             continue
@@ -679,13 +751,29 @@ def _generate_sql(
             if ok and conn is not None:
                 cerr = compile_check(conn, sql)
             if ok and not cerr:
+                _gen_stats().record(
+                    attempts=attempt + 1,
+                    first_ok=(attempt == 0),
+                    mode=fs_mode,
+                    injected=len(fs_examples),
+                    ok=True,
+                    sql=sql,
+                )
                 return sql, []
             errors.extend(list(serrs)[:4] if not ok else [])
             if cerr:
                 errors.append(f"编译错误: {cerr[:200]}")
         except Exception as exc:  # noqa: BLE001
             errors.append(f"校验异常: {exc}")
+            _gen_stats().record(
+                attempts=attempt + 1, first_ok=False, mode=fs_mode,
+                injected=len(fs_examples), ok=False, reason="validate_error", sql=last_sql,
+            )
             return "", errors
+    _gen_stats().record(
+        attempts=retries + 1, first_ok=False, mode=fs_mode,
+        injected=len(fs_examples), ok=False, reason="retry_exhausted", sql=last_sql,
+    )
     return "", errors
 
 
