@@ -52,7 +52,7 @@
 4. 向量库数据治理：增加集合内容校验（仅研报类文档入库），修复混入数据。
 5. 引入评估集：用项目需求集"问题汇总.xlsx"构建 QA 评测集，量化三链路效果差异。
 6. 补齐 Web 端 Agent 模式入口（前端框架描述已与代码统一，README 已修正为 React 19）。
-7. 收尾进展（2026-08-22）：阶段 3（Dify 职责收敛）已完成 —— `dify_tool.py`/`langchain_tools.py` 迁入 `tools/`，全部引用同步更新，消除根目录互相顶层 import；阶段 4（RAGConfig/LangChainConfig 双份配置合并）亦已完成，`langchain_config.py` 降为兼容层。
+7. 收尾进展（2026-08-22）：阶段 3（Dify 职责收敛）已完成 —— 相关工具迁入 `tools/`，全部引用同步更新，消除根目录互相顶层 import；阶段 4（RAGConfig/LangChainConfig 双份配置合并）亦已完成，兼容层已删除。注：Dify 已于 2026-08-30 迁移原生 SQL 链路（`tools/native_financial.py`），相关工具与守卫逻辑已废弃。
 8. 收尾进展（2026-08-23）：Agent 编排后端对照（#9 实验）—— 新增 `agents/langgraph_planner.py`（LangGraph StateGraph 版，与自研 `AgentPlanner` 同 prompt/同 tools/同输出契约），默认仍用自研（`AGENT_PLANNER_BACKEND=handwritten`），LangGraph 标实验；对照口径见 `docs/LangGraph对照.md`。
-9. 收尾进展（2026-08-24）：SQL 守卫 + Agent 关思考 + LangGraph 全量回归 —— 新增 `tools/dify_guard.py`（静态校验 + 全角标点检查 + MySQL 编译 + 失败带错误提示重问，`AGENT_DIFY_RETRY=1`），挂接 `agents/planner.py::call_dify_chatflow` 两版共用；Agent 循环统一关思考（`AGENT_ENABLE_THINKING=false` 默认）；LangGraph 后端同口径 80 题回归：91.3%（116/127）→ 守卫 v1 97.2%（104/107）→ 守卫 v2（yoy 字段白名单提示，Dify prompt 规则 5 写入 Dify 提示词配置文件（规则见 `docs/问题记录/提示词.txt`））**108/108 = 100.0%**，与手工基线 224/224 同口径持平；`docs/评估报告.md` 由 `python -m eval report` 自动聚合 LangGraph 指标小节。
+9. 收尾进展（2026-08-24）：SQL 守卫 + Agent 关思考 + LangGraph 全量回归 —— SQL 守卫（静态校验 + 全角标点检查 + MySQL 编译 + 失败带错误提示重问）挂接 Agent 工具循环两版共用（现为 `tools/sql_guard.py`，Dify 时代守卫逻辑已废弃）；Agent 循环统一关思考（`AGENT_ENABLE_THINKING=false` 默认）；LangGraph 后端同口径 80 题回归：91.3%（116/127）→ 守卫 v1 97.2%（104/107）→ 守卫 v2（yoy 字段白名单提示）**108/108 = 100.0%**，与手工基线 224/224 同口径持平；`docs/评估报告.md` 由 `python -m eval report` 自动聚合 LangGraph 指标小节。
 10. 收尾进展（2026-08-24）：overlap 分块参数统一 —— 双默认值（splitter 150 vs config 100）经对比实验（5 档离线统计 + 100/150 双集合检索命中对比）确认 **100 最优**；`splitter.py` 默认改为 100，`rebuild_full_index.py` 新增 `--chunk-overlap/--chunk-size` 参数，全量重建 `research_reports_v3_full`（57,178 点，33.6 分钟）验证指标无退化；简历/面试口径同步为"overlap 对比实验确认 100"。报告 `docs/overlap对比实验.md`。

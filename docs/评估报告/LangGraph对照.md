@@ -63,17 +63,17 @@
 **三轮迭代（同一 80 题 / LangGraph 后端）**：
 1. **首跑（无守卫）**：116/127 = 91.3%，11 条失败语句全部来自 Dify 工作流 SQL 输出质量
    （B2011 全角逗号；B2047 未定义别名 / 非 SELECT 文本；B2060/B2073/B2076 编造 `*_yoy_growth` 字段）；
-2. **守卫 v1**（`tools/dify_guard.py`：静态校验 + MySQL 编译 → 失败带错误提示重问一次）：
+2. **守卫 v1**（静态校验 + MySQL 编译 → 失败带错误提示重问一次；该守卫随 Dify 链路废弃，现由 `tools/sql_guard.py` 承接）：
    104/107 = 97.2%——B2011/B2047/B2076 修复；
 3. **守卫 v2**（错误提示追加"可用字段参考 + yoy 字段白名单"）：108/108 = **100.0%**——
    B2060/B2073 的字段幻觉被白名单提示纠正。
 
-**守卫机制（本轮新增，两版后端共用）**：
-- `tools/dify_guard.py`：`sql_errors()`（静态校验 + 全角标点启发式 + MySQL 编译终审）+
-  `call_dify_with_guard()`（校验失败 → 把错误与字段建议拼回问题重问，`AGENT_DIFY_RETRY` 默认 1 次）；
-- 挂接点：`agents/planner.py::call_dify_chatflow`（自研 / LangGraph 同源）；
-- 配置：`RAGConfig.AGENT_SQL_VALIDATE`（默认开）/ `AGENT_DIFY_RETRY`（默认 1）/ `MYSQL_*`
-  （schema + 编译终审）；单元测试 `tests/test_dify_guard.py` 8 例（离线）。
+**守卫机制（本轮新增，两版后端共用；Dify 时代实现已废弃）**：
+- 静态校验（表名/别名/字段归属 + 全角标点启发式 + MySQL 编译终审）+
+  校验失败 → 把错误与字段建议拼回问题重问（当时由重试开关控制次数，该配置已随 Dify 下线移除）；
+- 挂接点：Agent 工具循环（自研 / LangGraph 同源），现为 `tools/sql_guard.py`；
+- 配置：`RAGConfig.AGENT_SQL_VALIDATE`（默认开）/ `MYSQL_*`
+  （schema + 编译终审）；守卫单测见 `tests/test_sql_guard.py`（离线）。
 
 **源头修复（prompt 规则）**：Dify 工作流 SQL 生成节点【再次强调】新增规则 5——yoy/qoq
 字段白名单（4 张表真实 yoy 字段逐一列出；费用科目无 yoy 字段、禁止编造任何变体），已同步
@@ -131,7 +131,7 @@ LangGraph 版 Agent 接入 LangGraph **checkpointer**，按 `thread_id=user_id` 
 
 - ~~Agent 循环统一关闭思考模式~~ → 已完成（`AGENT_ENABLE_THINKING=false` 默认，两版同源）。
 - ~~全量 Agent 回归（224 题口径）基线跑在自研后端；若切换 LangGraph 需先跑同口径回归~~ → 已完成，见"全量回归对照"一节；结论暂不切换。
-- ~~Dify SQL 质量加固（校验器拒收重试 / 字段白名单）~~ → 已完成：`tools/dify_guard.py` 守卫
-  挂接 Agent 工具循环，语句级 91.3% → 100.0%（108/108）；prompt 规则 5 已写入 YAML/提示词文档，
-  待重新导入 Dify 生效。
+- ~~Dify SQL 质量加固（校验器拒收重试 / 字段白名单）~~ → 已完成：守卫逻辑
+  挂接 Agent 工具循环，语句级 91.3% → 100.0%（108/108）；该守卫随 Dify 链路废弃，
+  现由 `tools/sql_guard.py` 承接。
 - 真实生产对比需 Qdrant + Dify 就绪后执行：`python tools/data_scripts/agent_planner_compare.py --backend both`。

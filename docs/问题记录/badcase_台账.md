@@ -168,7 +168,7 @@ WHERE stock_abbr LIKE '%云南白药%' AND (...)
 
 **结果：9/9 编号级全部通过，语句级 9/9 SQL 在 MySQL 编译执行通过。**
 - 稳定性抽查：B2049 连跑 4/4 通过（单表优先规则生效后）；B2049/B2053/B2075 重跑全部通过。
-- 说明：Dify 工作流通过更新已发布 graph 生效（备份：`<结果数据>/dify_graph_published_backup.json`、`dify_graph_backup_v2.json`）；如需在 Dify UI 同步，可重新导入 `提示词配置文件（本地保留，不入库）` 并发布。
+- 说明：Dify 工作流通过更新已发布 graph 生效（备份：`<结果数据>/dify_graph_published_backup.json`）；如需在 Dify UI 同步，可重新导入 `提示词配置文件（本地保留，不入库）` 并发布。
 
 ## 八、工程化拦截：SQL 字段-表归属校验器（2026-08-17 落地）
 
