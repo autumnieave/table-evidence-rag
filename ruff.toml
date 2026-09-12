@@ -28,11 +28,3 @@ extend-exclude = [
 select = ["E9", "F63", "F7", "F82"]
 # 全局豁免：空（最小子集在"非豁免文件"上零违规）
 ignore = []
-
-[lint.per-file-ignores]
-# ==================== 存量豁免清单（2026-09-10 首跑基线） ====================
-# 规则：每条豁免必须写明「问题 + 原因 + 跟进任务编号」；修复后立即删除对应条目。
-# 全部 7 条均为 F821（未定义名），已登记为 B-35（ruff 首跑暴露的未定义名缺陷修复）。
-"llm/generator.py" = ["F821"]                          # B-35: `__main__` 分支调用未导入的 interactive_main（仅脚本直跑触发）
-"pipelines/rag_pipeline.py" = ["F821"]                 # B-35: conversational_query 内 B-28 错字块误用 `question`（应为 user_input）→ /chat/clarify 直接 NameError
-"tools/data_scripts/pdf处理+校验入库.py" = ["F821"]       # B-35: main() 使用 sys 但未 import（被 except Exception 吞掉，静默失效）

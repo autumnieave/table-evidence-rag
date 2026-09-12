@@ -980,15 +980,15 @@ class RAGPipeline:
         # B-28 错字归一化（Agent 入口统一处理，覆盖 handwritten / langgraph 两后端）：
         # 在拆解前还原公司简称/指标错字（云白要→云南白药、资产负债绿→资产负债率 等），
         # 避免 supervisor 先改写错字导致后续无法纠回（C2011 根因）
-        if question and question.strip():
+        if user_input and user_input.strip():
             try:
                 from tools.typo_normalizer import load_company_abbrs_from_config, normalize_question_typos  # noqa: PLC0415
 
                 names = load_company_abbrs_from_config(self.config)
-                norm_question, fixes = normalize_question_typos(question, names)
+                normalized_input, fixes = normalize_question_typos(user_input, names)
                 if fixes:
-                    logger.info("B-28 错字归一化(agent_query 入口): %r -> %r（%s）", question, norm_question, fixes)
-                question = norm_question
+                    logger.info("B-28 错字归一化(conversational_query 入口): %r -> %r（%s）", user_input, normalized_input, fixes)
+                user_input = normalized_input
             except Exception as exc:  # noqa: BLE001
                 logger.warning("B-28 错字归一化跳过（不影响主流程）: %s", exc)
         # 按 user_id 加载会话（持久化存储优先；重启后跨进程恢复）

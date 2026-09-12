@@ -39,7 +39,7 @@ RAG 金融研报智能问数系统：基于检索增强生成（RAG）的上市�
 | `eval/challenge.py` | 对抗挑战集 v2（18 条 / 5 类，`python -m eval challenge --run` / `--rejudge`） |
 | `prompts/registry.json` | Prompt 版本注册表（唯一事实源；防漂移单测 `tests/test_prompt_registry.py`） |
 | `prompts/fallback.py` | 兜底话术模板（refuse / suggest / human 三层，B-18） |
-| `prompts/examples/` | few-shot 示例库（B-15 静态 + B-16 动态检索注入 SQL_GEN） |
+| `prompts/examples/` | few-shot 示例库（B-15 示例库 + B-16 三态开关：none/static/dynamic） |
 | `agents/langgraph_planner.py` | LangGraph StateGraph 单 Agent 编排（对照实验） |
 | `agents/langgraph_multi_agent.py` | **当前主链路**：supervisor-workers 多 Agent 协作 |
 | `tools/typo_normalizer.py` | 错别字归一化（对抗挑战集 B-28 修复） |

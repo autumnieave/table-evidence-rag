@@ -102,4 +102,6 @@ class LLMGenerator:
 # ==================== 主流程与交互模块 ====================
 
 if __name__ == "__main__":
+    from scripts.interactive import main as interactive_main
+
     interactive_main()
