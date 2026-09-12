@@ -107,7 +107,7 @@ WHERE stock_abbr LIKE '%云南白药%' AND (...)
 
 ### 已落地修改
 1. `docs/问题记录/提示词.txt`：核心禁令新增 **规则 6「字段-表归属严格校验」、规则 7「多表别名强制规则」、规则 8「同名字段歧义规则」**，并补充「字段→表速查」（`net_profit`→income_sheet、`net_profit_10k_yuan`→core 表等）与 JOIN 正例/反例。
-2. `database/任务二 (4).yml`（Dify 工作流导出）：SQL 生成节点同步补充规则 7/8、字段→表速查与正例/反例（该导出原本已含规则 6，比 `提示词.txt` 旧版更新；两处现已一致）。
+2. `提示词配置文件（本地保留，不入库）`（Dify 工作流导出）：SQL 生成节点同步补充规则 7/8、字段→表速查与正例/反例（该导出原本已含规则 6，比 `提示词.txt` 旧版更新；两处现已一致）。
 
 ### 回归方法（说明）
 - Dify（localhost:5001）未运行，本次为 **Prompt 级回归**：提取工作流 YAML 中 SQL 生成节点的最终 system prompt + qwen3.5-plus（temperature 0.7，与 Dify 节点一致），输入取原失败 SQL 的 SELECT 字段作为 `Standard_field_name`，生成后逐句在 MySQL 真实执行校验。
@@ -127,7 +127,7 @@ WHERE stock_abbr LIKE '%云南白药%' AND (...)
 ## 七、真端到端复验记录（2026-08-17，Dify 全链路）
 
 ### 复验环境
-- Dify v1.13.0（Docker，localhost:5001），工作流 `database/任务二 (4).yml` 已导入并发布；App API Key `app-xxxx`
+- Dify v1.13.0（Docker，localhost:5001），工作流 `提示词配置文件（本地保留，不入库）` 已导入并发布；App API Key `app-xxxx`
 - MySQL `financial_database`（127.0.0.1:3306）逐句编译执行，`MAX_EXECUTION_TIME=15s`
 - 链路：用户问题 → Dify「问题重构 → 判断问题是否清晰（语义转化）→ SQL 生成」→ 提取 SQL → MySQL 校验
 
@@ -168,7 +168,7 @@ WHERE stock_abbr LIKE '%云南白药%' AND (...)
 
 **结果：9/9 编号级全部通过，语句级 9/9 SQL 在 MySQL 编译执行通过。**
 - 稳定性抽查：B2049 连跑 4/4 通过（单表优先规则生效后）；B2049/B2053/B2075 重跑全部通过。
-- 说明：Dify 工作流通过更新已发布 graph 生效（备份：`<结果数据>/dify_graph_published_backup.json`、`dify_graph_backup_v2.json`）；如需在 Dify UI 同步，可重新导入 `database/任务二 (4).yml` 并发布。
+- 说明：Dify 工作流通过更新已发布 graph 生效（备份：`<结果数据>/dify_graph_published_backup.json`、`dify_graph_backup_v2.json`）；如需在 Dify UI 同步，可重新导入 `提示词配置文件（本地保留，不入库）` 并发布。
 
 ## 八、工程化拦截：SQL 字段-表归属校验器（2026-08-17 落地）
 

@@ -35,7 +35,7 @@
 
 | 轮次 | 新增内容 | 落点 |
 | --- | --- | --- |
-| 第 1 轮 | 核心禁令 6「字段-表归属严格校验」、7「多表别名强制规则」、8「同名字段歧义规则」 | `docs/问题记录/提示词.txt` + `database/任务二 (4).yml` |
+| 第 1 轮 | 核心禁令 6「字段-表归属严格校验」、7「多表别名强制规则」、8「同名字段歧义规则」 | `docs/问题记录/提示词.txt` + `提示词配置文件（本地保留，不入库）` |
 | 第 2 轮 | 规则 6 补充「字段→表速查」：`net_profit`→income_sheet、`net_profit_10k_yuan`→core 表等 | 同上 |
 | 第 3 轮 | 规则 6 增加 JOIN 正例/反例（few-shot） | 同上 |
 
@@ -79,14 +79,14 @@
 - 结果：3 轮迭代 0/9 → 9/9。
 
 **阶段二：真端到端复验（Dify 全链路，2026-08-17）**
-- 环境：Dify v1.13.0（Docker，localhost:5001），工作流 `任务二 (4).yml` 已导入并发布，API Key `app-xxxx`。
+- 环境：Dify v1.13.0（Docker，localhost:5001），工作流 `提示词配置文件` 已导入并发布，API Key `app-xxxx`。
 - 链路：用户问题 → Dify「问题重构 → 语义转化 → SQL 生成」→ 提取 SQL → MySQL 逐句编译。
 - 复验前：6/9 通过（B2049/B2053 语义节点反问、B2075 JOIN 不存在表）；补充修复后 **9/9 全部通过**（含 B2049 稳定性连跑 4/4）。
 - 边界：本复验口径为"生成 SQL 能否在 MySQL 真实编译执行"；答案语义正确性不在本次范围（B2007 子问题 2/3 被正确判为"与数据查询无关"）。
 
 - `docs/问题记录/badcase_台账.md` —— 9 条 badcase 逐条明细与状态跟踪
 - `docs/问题记录/提示词.txt` —— SQL 生成 Prompt（含新规则 6/7/8）
-- `database/任务二 (4).yml` —— Dify 工作流导出（SQL 生成节点已同步）
+- `提示词配置文件（本地保留，不入库）` —— Dify 工作流导出（SQL 生成节点已同步）
 - `<结果数据>/sql_compile_report.csv`、`regression_final.json` 等 —— 校验明细数据（不入 git）
 - `<结果数据>/e2e_diag.json` / `e2e_diag_temp01.json` / `e2e_diag_final.json` —— 端到端复验前后明细（不入 git）
 - `tools/sql_validator.py`、`tools/data_scripts/sql_validator_selftest.py` / `sql_guard_regression.py` / `sql_guard_repair_demo.py` —— 工程化拦截（SQL 校验器 + 守卫回归）
@@ -208,7 +208,7 @@
 针对全量回归暴露的 A 类字段-表归属问题（B2045/B2063/B2051）与 B2035 虚构子查询表，做第三轮闭环。
 
 
-1. **提示词新增规则 9「字段-别名归属反查自检」**（已同步到 `docs/问题记录/提示词.txt`、`database/任务二 (4).yml`、Dify 已发布工作流 `bccf7a91-...`）：
+1. **提示词新增规则 9「字段-别名归属反查自检」**（已同步到 `docs/问题记录/提示词.txt`、`提示词配置文件（本地保留，不入库）`、Dify 已发布工作流 `bccf7a91-...`）：
    - 反查原则：SELECT 每个字段必须先到字段白名单反查所属表，再用该表别名取出；
    - 三步自检：字段属哪张表 → 挂在哪个别名下 → 别名对应表是否等于字段所属表；
    - 易错字段强记：`roe`/`net_profit_10k_yuan` 等 → core 表；`operating_expense_*`/`net_profit` 等 → income_sheet；`asset_*`/`liability_*`/`equity_*`（含 `asset_liability_ratio`）→ balance_sheet；
@@ -254,8 +254,8 @@
 
 - Dify 工作流 SQL 生成节点【再次强调】新增规则 5：4 张表真实 yoy/qoq 字段逐一列出
   （income_sheet 仅 `net_profit_yoy_growth`、`operating_revenue_yoy_growth`；费用科目无 yoy 字段、禁止编造任何变体）；
-- 已同步写入 `database/任务二 (4).yml` 与 `docs/问题记录/提示词.txt`；
-- **需重新导入 任务二 (4).yml 到 Dify 后生效**；当前 100% 由守卫兜底达成，不依赖重新导入。
+- 已同步写入 `提示词配置文件（本地保留，不入库）` 与 `docs/问题记录/提示词.txt`；
+- **需重新导入该提示词配置文件到 Dify 后生效**；当前 100% 由守卫兜底达成，不依赖重新导入。
 
 
 - LangGraph 在 **17 题**上未产生 SQL（其中 B2015/B2022 手工基线为 1/1 通过）；
