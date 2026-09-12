@@ -25,7 +25,7 @@ qa-frontend/.env.*
 qdrant_storage/
 result/
 测试数据/
-B题数据及提交说明/
+data_corpus/
 汇总结果/
 训练结果数据/
 database/chat_memory.db*

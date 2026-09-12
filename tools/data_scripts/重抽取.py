@@ -17,8 +17,8 @@ BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 MODEL = "qwen-vl-max"                            # 视觉理解模型
 
 PDF_FOLDERS = [
-    "B题数据及提交说明/全部数据/正式数据/附件2：财务报告/reports-深交所",
-    "B题数据及提交说明/全部数据/正式数据/附件2：财务报告/reports-上交所",
+    "data_corpus/全部数据/正式数据/附件2：财务报告/reports-深交所",
+    "data_corpus/全部数据/正式数据/附件2：财务报告/reports-上交所",
 ]                                                                               # 存放所有PDF的文件夹（正式数据）
 OUTPUT_CSV = "extracted_missing_fields.csv"      # 输出结果文件名
 MAX_WORKERS = 3                                  # 并行线程数（避免API限流）

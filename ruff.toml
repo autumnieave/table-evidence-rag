@@ -16,7 +16,7 @@ extend-exclude = [
     "notebooks",
     "docs",
     "qa-frontend",
-    "B题数据及提交说明",
+    "data_corpus",
     "训练结果数据",
     "汇总结果",
     "测试数据",

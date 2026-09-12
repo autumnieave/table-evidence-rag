@@ -2,7 +2,7 @@
 """tools/data_scripts/rebuild_full_index.py —— 全量语料索引重建（正式数据 附件5）
 
 背景：线上集合 research_reports_v3 由旧 测试数据 语料（164 篇）构建，
-与参考答案引用的正式数据语料（B题数据及提交说明/.../附件5：研报数据，473 篇）零重叠，
+与参考答案引用的正式数据语料（data_corpus/.../附件5：研报数据，473 篇）零重叠，
 导致"引用可溯源"无法被检索层支撑。本脚本将正式数据语料重建为独立集合
 （默认 research_reports_v3_full），不动线上集合，供检索评测与后续切换。
 
@@ -34,7 +34,7 @@ from vectorstore import QdrantClientWrapper
 logger = logging.getLogger("rebuild_full_index")
 
 #: 正式数据 附件5 语料根目录（参考答案引用来源）
-CORPUS_ROOT = Path("B题数据及提交说明/全部数据/正式数据/附件5：研报数据")
+CORPUS_ROOT = Path("data_corpus/全部数据/正式数据/附件5：研报数据")
 #: 单请求嵌入条数（DashScope v2 上限 25）
 EMBED_BATCH = 25
 

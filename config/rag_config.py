@@ -208,7 +208,7 @@ class RAGConfig:
     """会话快照保留时长 (秒)，默认 24h"""
 
     # ── 引用校验（L1）配置 ────────────────────────────────────────────
-    CITATION_CORPUS_ROOT: str = field(default_factory=lambda: _env("CITATION_CORPUS_ROOT", "B题数据及提交说明/全部数据/正式数据/附件5：研报数据"))
+    CITATION_CORPUS_ROOT: str = field(default_factory=lambda: _env("CITATION_CORPUS_ROOT", "data_corpus/全部数据/正式数据/附件5：研报数据"))
     """引用核验语料根目录"""
     CITATION_MATCH_MODE: str = field(default_factory=lambda: _env("CITATION_MATCH_MODE", "comma"))
     """数字匹配口径：raw=原样 / comma=逗号归一化 / loose=comma+去空白"""

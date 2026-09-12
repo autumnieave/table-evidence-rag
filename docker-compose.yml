@@ -42,7 +42,7 @@ services:
     volumes:
       - ./result:/app/result                             # 图表/报告产物
       - ./database:/app/database                         # sqlite 会话记忆 / 查询缓存，与本地同源
-      - ./B题数据及提交说明:/app/B题数据及提交说明:ro       # 引用核验语料（查看原文/数字核验）
+      - ./data_corpus:/app/data_corpus:ro       # 引用核验语料（查看原文/数字核验）
     environment:
       # ---- 检索/向量库：走 compose 内网 qdrant 服务（宿主仍可从 6333 访问同一数据）----
       - QDRANT_HOST=qdrant
@@ -61,7 +61,7 @@ services:
       - ENABLE_MULTI_TURN=${ENABLE_MULTI_TURN:-false}
       - HYBRID_ENABLED=${HYBRID_ENABLED:-true}
       - GENERATOR_CONTEXT_TOP_N=${GENERATOR_CONTEXT_TOP_N:-10}
-      - CITATION_CORPUS_ROOT=${CITATION_CORPUS_ROOT:-B题数据及提交说明/全部数据/正式数据/附件5：研报数据}
+      - CITATION_CORPUS_ROOT=${CITATION_CORPUS_ROOT:-data_corpus/全部数据/正式数据/附件5：研报数据}
       # ---- 记忆（SQLite 默认；Redis 需自备/另起）----
       - MEMORY_BACKEND=${MEMORY_BACKEND:-sqlite}
       - MEMORY_DB_PATH=/app/database/chat_memory.db
