@@ -47,7 +47,7 @@
 `python -m pytest tests/ -q` → **77 passed**。
 
 
-**口径**：与 golden v1 同源（B 题 80 题 / 108 子问题 / 291 句基线），Agent 多轮累积口径
+**口径**：与 golden v1 同源（80 题 / 108 子问题 / 291 句基线），Agent 多轮累积口径
 （逐题 `agent_query` → `conversation_state.sql` 累积 → 静态校验 + MySQL 编译）。
 命令：`python -X utf8 -m tools.data_scripts.sql_agent_regression --backend langgraph --progress-every 10`
 （Dify / Qdrant / MySQL 全程在线）。
@@ -77,8 +77,8 @@
 
 **源头修复（prompt 规则）**：Dify 工作流 SQL 生成节点【再次强调】新增规则 5——yoy/qoq
 字段白名单（4 张表真实 yoy 字段逐一列出；费用科目无 yoy 字段、禁止编造任何变体），已同步
-写入 `database/任务二 (4).yml` 与 `docs/问题记录/提示词.txt`；
-**需重新导入 任务二 (4).yml 到 Dify 后生效**（当前 100% 由守卫兜底达成，不依赖重新导入）。
+写入 Dify 提示词配置文件（规则见 `docs/问题记录/提示词.txt`）；
+**需重新导入该配置文件到 Dify 后生效**（当前 100% 由守卫兜底达成，不依赖重新导入）。
 
 **轨迹差异（与手工基线逐题对比）**：LangGraph 在 **17 题**上未产生 SQL（其中 B2015/B2022
 手工为 1/1 通过）、在 **9 题**上新增了通过的 SQL（B2003/B2012/B2017/B2018/B2023/B2027/B2029/

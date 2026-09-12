@@ -6,7 +6,7 @@
 
 用法::
 
-    python -m eval golden init --source 训练结果数据/result_3_parallel.xlsx --version v1 --tag "B题80题全量"
+    python -m eval golden init --source 训练结果数据/result_3_parallel.xlsx --version v1 --tag "80题全量"
     python -m eval golden list
     python -m eval golden verify --version v1
     python -m eval sql --suite full --limit 3

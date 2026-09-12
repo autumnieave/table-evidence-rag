@@ -244,7 +244,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_init = gsub.add_parser("init", help="固化题库快照并注册版本")
     p_init.add_argument("--source", required=True, help="源 xlsx 路径（如 训练结果数据/result_3_parallel.xlsx）")
     p_init.add_argument("--version", required=True, help="版本号（如 v1）")
-    p_init.add_argument("--tag", default="", help="描述标签（如 B题80题全量）")
+    p_init.add_argument("--tag", default="", help="描述标签（如 80题全量）")
     p_init.set_defaults(func=cmd_golden_init)
     p_list = gsub.add_parser("list", help="列出全部版本")
     p_list.set_defaults(func=cmd_golden_list)

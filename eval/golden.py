@@ -221,7 +221,7 @@ def init_golden(source: Path, version: str, tag: str = "") -> Path:
     Args:
         source: 源 xlsx 路径
         version: 版本号（如 v1）
-        tag: 描述标签（如 "B题80题全量（291句）"）
+        tag: 描述标签（如 "80题全量（291句）"）
 
     Returns:
         快照文件路径

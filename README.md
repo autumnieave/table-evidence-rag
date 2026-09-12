@@ -93,7 +93,7 @@ docker compose up -d --build
 
 ### 数据与评估资产说明
 
-- **原始数据不随仓库分发**（竞赛数据，按版权不公开）：研报语料按 `docs/DEPLOYMENT.md` 放置后运行 `python rag_全流程构建.py --build` 构建索引；财务数据由公开财报经 `tools/data_scripts/pdf处理+校验入库.py` 抽取入库（表结构见 `database/schema.sql`，仅建表、不含数据）。
+- **原始数据不随仓库分发**（原始数据，按版权不公开）：研报语料按 `docs/DEPLOYMENT.md` 放置后运行 `python rag_全流程构建.py --build` 构建索引；财务数据由公开财报经 `tools/data_scripts/pdf处理+校验入库.py` 抽取入库（表结构见 `database/schema.sql`，仅建表、不含数据）。
 - **评估资产为本地 gitignored 资产，不入库**：golden 快照（`database/golden/`，80 题/108 子问题评估基准）、字段抽取记录（`database/extracted_missing_fields.csv`）及各回归明细 JSON 仅保存在本地，用于复现文档中的评估口径。
 - **可复现范围**：源码、离线单测（零外部依赖）、CI 与评估框架完整入库，clone 后即可运行；完整数据与评估基准需按文档自备。
 - **安全提示**：MySQL 默认密码（`MYSQL_ROOT_PASSWORD` / `MYSQL_PASSWORD` = `123456`）仅用于本地开发，生产/公网部署务必通过 `.env` 修改。

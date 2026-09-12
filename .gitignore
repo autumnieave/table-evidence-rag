@@ -60,13 +60,12 @@ _*.ps1
 docs/论文/
 docs/*.pdf
 docs/面试准备/
-docs/课程作业/
 
 database/测试数据库.sql
 
 database/训练数据库.sql
 
-# ===== 竞赛数据派生文件（本地保留，不入库） =====
+# ===== 原始数据派生文件（本地保留，不入库） =====
 database/extracted_missing_fields.csv
 database/golden/
 database/answer_keys/

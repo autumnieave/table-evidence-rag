@@ -55,7 +55,7 @@ RAG 金融研报智能问数系统：基于检索增强生成（RAG）的上市�
 - 运行核心：`rag_全流程构建.py`（CLI 启动器，委托 `scripts.interactive`）、`app/`（FastAPI 包，`uvicorn app.api:app` 启动）
 - `notebooks/`：数据分析 Notebook（pdf解析 等）
 - `database/`：SQL 建表脚本、数据 CSV
-- `docs/`：项目文档与资料（论文/、问题记录/、评估报告/、课程作业/）
+- `docs/`：项目文档与资料（论文/、问题记录/、评估报告/）
 - `archive/`：历史归档（旧版程序、临时脚本、备份文件）——**不要向其中添加新代码**
 - 运行时数据（不入 git）：`<数据目录>/ qdrant_storage/ result/ 汇总结果/ <结果数据>/ <数据根目录>/`
 

@@ -36,7 +36,7 @@
 - **经验**：排查"模型空回答"时，先确认输入文本是否在传输/落盘时被编码破坏，再怀疑模型本身。
 
 ### 7. 项目 git 化：大文件与密钥防护
-- **背景**：项目总计约 7.3GB（<竞赛数据> 4.3GB、<数据目录> 1.3GB、qdrant_storage 946MB、.venv 353MB），且 `.env` 含 `DASHSCOPE_API_KEY`。
+- **背景**：项目总计约 7.3GB（<原始数据> 4.3GB、<数据目录> 1.3GB、qdrant_storage 946MB、.venv 353MB），且 `.env` 含 `DASHSCOPE_API_KEY`。
 - **解决**：`git init` 前先创建 `.gitignore`（排除 `.env`、`.venv/`、`qdrant_storage/`、`<数据目录>/`、`<数据根目录>/`、`node_modules/`、`archive/` 等）；首次提交仅 92 个文件、0.47MB。
 - **经验**：含密钥或大数据目录的项目，git 化第一步永远是 `.gitignore` 再 `git init`；提交前用 `git status --short` 复查。
 
