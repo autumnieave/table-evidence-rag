@@ -110,11 +110,11 @@ python -m py_compile scripts/interactive.py src/pipelines/rag_pipeline.py
 python -m pytest tests/ -q
 
 # 导入冒烟测试
-python -c "from pipelines.rag_pipeline import RAGPipeline; print('OK')"
+$env:PYTHONPATH="src"; python -c "from pipelines.rag_pipeline import RAGPipeline; print('OK')"
 python -c "from scripts.interactive import main; print('OK')"
 
 # Web 后端
-uvicorn app.api:app --reload --port 8000
+uvicorn app.api:app --app-dir src --reload --port 8000
 
 # Git 自查（改完代码必看）
 git status --short        # 查看改动概览

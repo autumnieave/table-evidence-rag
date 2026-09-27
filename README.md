@@ -2,13 +2,13 @@
 
 面向上市公司研报与财报的端到端智能问答系统：用户用自然语言即可查询财务数据、研报观点，答案带引用可溯源。采用 **LangGraph 多 Agent 编排 + SQL 财务链路 + RAG 研报链路**，配套 FastAPI / React 前端与完整评估闭环。
 
-[![CI](https://github.com/autumnieave/smart-financial-qa/actions/workflows/ci.yml/badge.svg)](https://github.com/autumnieave/smart-financial-qa/actions/workflows/ci.yml) [![tests](https://img.shields.io/badge/473%20tests-passing-brightgreen)]() [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![CI](https://github.com/autumnieave/smart-financial-qa/actions/workflows/ci.yml/badge.svg)](https://github.com/autumnieave/smart-financial-qa/actions/workflows/ci.yml) [![tests](https://img.shields.io/badge/531%20tests-passing-brightgreen)]() [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 ## 核心指标
 
 - **SQL 编译通过率：96.9% → 100%**（80 题全量回归；最新口径 **103/103** @2026-09-10 提示词 v10，有 SQL 题 69/69 全通过、失败 0；历史口径 Agent 224/224、原生 SQL 102/102、137/137@2026-09-05，分母各不相同，不可直接对比）
 - **引用文件可溯源 100%（1080/1080）**、**答案数字可溯源 99.9%（4068/4071，归一化口径；3 项未溯源为非数据 token）**，人工回查真实幻觉 **0 例**
-- **473 个离线单测全部通过**（473 用例 / 37 个测试文件，零外部依赖，CI 自动执行）
+- **531 个离线单测全部通过**（531 用例 / 39 个测试文件，零外部依赖，CI 自动执行）
 - 数字级引用命中率 **70.2% → 74.9%**（混合检索：向量 + BM25 + RRF）
 
 ## 功能亮点
@@ -78,7 +78,7 @@ python rag_全流程构建.py --build
 python rag_全流程构建.py
 
 # Web 后端（端口 8000）
-uvicorn app.api:app --reload --port 8000
+uvicorn app.api:app --app-dir src --reload --port 8000
 
 # 前端（qa-frontend 目录，端口 5173）
 cd qa-frontend && npm install && npm run dev
@@ -114,7 +114,7 @@ docker compose up -d --build
 ## 测试与评估
 
 ```bash
-python -m pytest tests/ -q        # 473 个离线单测 / 37 个测试文件（零外部依赖）
+python -m pytest tests/ -q        # 531 个离线单测 / 39 个测试文件（零外部依赖）
 python -m eval sql --suite full   # SQL 全量回归（需本地 golden 数据）
 python -m eval citation           # L1 引用核验（需本地语料）
 python -m eval report             # 聚合评估报告
@@ -141,15 +141,15 @@ python -m eval report             # 聚合评估报告
 ## 项目结构
 
 ```
-src/app/            FastAPI 入口（api.py / schemas.py）
-src/core/           链路接口（IRetriever / IReranker / IGenerator）
-eval/           评估闭环（golden / SQL / citation / report）
-src/pipelines/      RAGPipeline 全流程编排
-src/agents/         LangGraph 多 Agent + 自研 AgentPlanner（对照）
-src/prompts/        唯一 Prompt 目录
-src/tools/      SQL 校验器 / 原生财务查询 / 数据处理脚本
-tests/          473 个用例 / 37 个测试文件（离线单测）
-qa-frontend/    React 19 前端
+src/            业务源码（15 个包：app / core / pipelines / agents / prompts / config / data / tools 等）
+tests/          531 个用例 / 39 个测试文件（离线单测，零外部依赖）
+docs/           设计与评估文档（ARCHITECTURE / DEPLOYMENT / 评估报告 / ai-context）
+eval/           评估闭环（golden / SQL / citation / report / llm-judge）
+scripts/        交互式问答入口与 CLI 启动器（interactive.py）
+qa-frontend/    React 19 + Vite 前端
+notebooks/      数据分析 Notebook（PDF 解析等）
+database/       SQL 建表脚本（schema.sql，仅结构不含数据）
+.github/        CI 工作流（ci.yml / ci-layered.yml）
 ```
 
 ## 相关文档
