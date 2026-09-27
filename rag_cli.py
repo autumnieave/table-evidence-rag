@@ -1,8 +1,8 @@
-"""rag_全流程构建.py - RAG全流程构建入口文件（CLI 启动器）
+"""rag_cli.py - RAG全流程构建入口文件（CLI 启动器）
 
 仅负责环境初始化并委托 scripts.interactive.main，具体逻辑见 scripts/。
 
-使用方式: python rag_全流程构建.py
+使用方式: python rag_cli.py
 """
 
 import logging

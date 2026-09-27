@@ -6,7 +6,7 @@ tools/data_scripts/export_citations.py
     python tools/data_scripts/export_citations.py \
         --input 训练结果数据/result_3_parallel.xlsx \
         --output 训练结果数据/references_all.json
-    python rag_全流程构建.py --validate-refs 训练结果数据/references_all.json
+    python rag_cli.py --validate-refs 训练结果数据/references_all.json
 """
 
 import argparse

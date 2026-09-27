@@ -38,8 +38,8 @@ Copy-Item .env.example .env                # 填写 DASHSCOPE_API_KEY
 docker compose up -d qdrant
 
 # 4) 构建 / 重建向量索引（首次必做）
-python rag_全流程构建.py --build           # 增量构建
-python rag_全流程构建.py --rebuild         # 强制重建
+python rag_cli.py --build           # 增量构建
+python rag_cli.py --rebuild         # 强制重建
 
 # 5) 启动后端
 uvicorn app.api:app --reload --port 8000
@@ -53,7 +53,7 @@ npm run dev                                # http://localhost:5173
 Invoke-RestMethod http://localhost:8000/health
 ```
 
-交互式 CLI：`python rag_全流程构建.py`，支持 `agent` / `multi-turn` / `langchain` / `chain` / `hybrid on|off` 开关切换，`status` 查看当前模式。
+交互式 CLI：`python rag_cli.py`，支持 `agent` / `multi-turn` / `langchain` / `chain` / `hybrid on|off` 开关切换，`status` 查看当前模式。
 
 ## 4. Docker Compose 全栈
 
@@ -73,7 +73,7 @@ docker compose down -v                     # 停止并清理数据卷（慎用�
 - 后端镜像通过 `.dockerignore` 排除大数据目录（`<数据目录>/`、`qdrant_storage/` 等），仅打包源码；
 - `./database` 以卷挂载：SQLite 会话记忆与 BM25 索引缓存在容器外持久化；`./result` 挂载图表输出；
 - 环境变量在 `.env` 中维护，compose 以 `${VAR:-default}` 注入；
-- 若宿主机已有 Qdrant 数据（`qdrant_storage/`），首次启动前可先在本地执行 `python rag_全流程构建.py --build` 预构建，再把 `qdrant_storage/` 一并交给容器（或直接在容器内 build，注意 `<数据目录>/` 未入镜像，需另挂载）。
+- 若宿主机已有 Qdrant 数据（`qdrant_storage/`），首次启动前可先在本地执行 `python rag_cli.py --build` 预构建，再把 `qdrant_storage/` 一并交给容器（或直接在容器内 build，注意 `<数据目录>/` 未入镜像，需另挂载）。
 
 ## 5. 环境变量清单
 
