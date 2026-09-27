@@ -5,18 +5,18 @@
 ### 1. DashScope Embedding SDK 版本不兼容（`input.contents` 报错）
 - **现象**：`dashscope.TextEmbedding.call(input=texts)` 报 `Value error, contents is neither str nor list of str.: input.contents`；后改 HTTP API 直接传数组又报 `The input parameter requires json format`。
 - **根因**：SDK 与 text-embedding-v2 接口不匹配；且 HTTP API 的 `input` 必须是对象。
-- **解决**：`embeddings/client.py` 用 `requests.post` 直连，payload 为 `{"model": ..., "input": {"texts": texts}, "parameters": {"text_type": text_type}}`（`input.texts` 数组，`text_type` 用 document/query 区分）。
+- **解决**：`src/embeddings/client.py` 用 `requests.post` 直连，payload 为 `{"model": ..., "input": {"texts": texts}, "parameters": {"text_type": text_type}}`（`input.texts` 数组，`text_type` 用 document/query 区分）。
 - **经验**：改第三方 API 调用前先 curl/单测确认 payload 格式，不要盲信 SDK。
 
 ### 2. LCEL 链 retriever 收到 dict 导致 embed_query 报错
 - **现象**：`chain on` 提问时 embedding 报 `input.contents`，而单独调用 adapter 正常。
 - **根因**：`{"context": retriever | format_docs, "question": ...}` 把整个输入 dict 传给 retriever，`embed_query(dict)` 序列化异常。
-- **解决**：`chains/rag_chain.py` 改为 `RunnablePassthrough.assign(context=lambda i: format_docs(retriever.invoke(i["question"])))`，只传 question 字符串。
+- **解决**：`src/chains/rag_chain.py` 改为 `RunnablePassthrough.assign(context=lambda i: format_docs(retriever.invoke(i["question"])))`，只传 question 字符串。
 - **经验**：LCEL 中 retriever 的输入必须显式提取字段，避免 dict 透传。
 
 ### 3. QdrantVectorStore 维度验证触发 embed_documents 报错
 - **现象**：`from_existing_collection` 初始化时调用 `embed_documents(["dummy_text"])` 校验维度，触发 DashScope 报错。
-- **解决**：`config/langchain_config.py` 新增 `get_vector_store_direct(client, collection_name, embedding)`，直接用 `QdrantVectorStore(client=..., ...)` 构造，并传 `validate_collection_config=False`（该默认值会走 `_validate_collection_for_dense` 调 embed_documents）。
+- **解决**：`src/config/langchain_config.py` 新增 `get_vector_store_direct(client, collection_name, embedding)`，直接用 `QdrantVectorStore(client=..., ...)` 构造，并传 `validate_collection_config=False`（该默认值会走 `_validate_collection_for_dense` 调 embed_documents）。
 - **经验**：langchain-qdrant 构造参数 `validate_embeddings`/`validate_collection_config` 默认 True，绕过校验需显式关闭。
 
 ### 4. qwen3.5-plus 推理模型空回答
@@ -51,8 +51,8 @@
 | 向量召回 K | 50（`RETRIEVAL_K`） | 三条链路共用 |
 | Rerank 精排 TopN | 10（`RERANK_TOP_N`） | qwen3-rerank，仅手写/LangChain 检索器链路 |
 | 文本分块 | CHUNK_SIZE 1024 / overlap 100 | `data/splitter` 与 `config` 统一 100（2026-08-24 对比实验确认，见 `docs/overlap对比实验.md`） |
-| Embedding 批处理 | batch_size=10，指数退避重试 3 次 | `embeddings/client.py` |
-| Agent 工具调用上限 | 10 轮 | `agents/planner.py` |
+| Embedding 批处理 | batch_size=10，指数退避重试 3 次 | `src/embeddings/client.py` |
+| Agent 工具调用上限 | 10 轮 | `src/agents/planner.py` |
 
 **实测方法**：执行下方测速片段，可分别得到检索/精排/生成/索引耗时；建议在 README 或 CI 中沉淀基准值。
 
@@ -133,4 +133,4 @@ def _should_aggregate_table(query: str) -> bool:
     query_lower = query.lower()
     return True  # 当前实现为强制聚合（保留关键词逻辑便于后续收紧）
 ```
-（对应 `utils/helpers.py` 实际实现；`_aggregate_parent_table` 通过 `parent_id` 拉取整表。）
+（对应 `src/utils/helpers.py` 实际实现；`_aggregate_parent_table` 通过 `parent_id` 拉取整表。）

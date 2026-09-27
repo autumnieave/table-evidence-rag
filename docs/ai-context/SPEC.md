@@ -16,7 +16,7 @@
 - 手写与 LangChain 检索器共用 `_parse_filters_with_llm`（软过滤，不硬过滤）。
 - `src/tools/data_scripts/` 中的脚本（pdf处理+校验入库/重抽取/batch_test/list_files）为独立数据处理工具，**不参与在线问答链路**，勿在主流程中 import。
 
-## 2. Agent 工具清单（`src/tools/tools_registry.py` + `agents/planner.py`）
+## 2. Agent 工具清单（`src/tools/tools_registry.py` + `src/agents/planner.py`）
 
 `AgentPlanner.execute(user_query, history, user_id, verbose)` 使用 Function Calling，最多 **10 轮** 工具调用，最终输出 JSON：`{content, image[], references[]}`；超轮数时返回兜底 JSON。
 
@@ -65,4 +65,4 @@
 - **多轮澄清**：`conversational_query(user_input)` 用 LLM 解析过滤条件→检查 `stock_name` 等必填字段→缺失时返回澄清问题（`ClarifyStatus.NEED_CLARIFY`），补齐后再检索。
 - **增量索引**：`add_new_stock_reports()` / `add_new_industry_reports()` 按目录读取新文档去重插入；`build_index(force_rebuild)` 全量构建/重建。
 - **表格聚合**：分块阶段表格行带 `is_table_row` + `parent_id`；检索命中表格行时 `_aggregate_parent_table` 拉全父表；非表格行批量摘要（`_generate_summaries`）。
-- **Web API**：`app/api.py`（`uvicorn app.api:app`）提供 `POST /chat`、`POST /chat/stream`（SSE：meta/content/done/error）、`GET /health`、静态 `/result`。
+- **Web API**：`src/app/api.py`（`uvicorn app.api:app`）提供 `POST /chat`、`POST /chat/stream`（SSE：meta/content/done/error）、`GET /health`、静态 `/result`。

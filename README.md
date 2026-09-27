@@ -141,12 +141,12 @@ python -m eval report             # 聚合评估报告
 ## 项目结构
 
 ```
-app/            FastAPI 入口（api.py / schemas.py）
-core/           链路接口（IRetriever / IReranker / IGenerator）
+src/app/            FastAPI 入口（api.py / schemas.py）
+src/core/           链路接口（IRetriever / IReranker / IGenerator）
 eval/           评估闭环（golden / SQL / citation / report）
-pipelines/      RAGPipeline 全流程编排
-agents/         LangGraph 多 Agent + 自研 AgentPlanner（对照）
-prompts/        唯一 Prompt 目录
+src/pipelines/      RAGPipeline 全流程编排
+src/agents/         LangGraph 多 Agent + 自研 AgentPlanner（对照）
+src/prompts/        唯一 Prompt 目录
 src/tools/      SQL 校验器 / 原生财务查询 / 数据处理脚本
 tests/          473 个用例 / 37 个测试文件（离线单测）
 qa-frontend/    React 19 前端

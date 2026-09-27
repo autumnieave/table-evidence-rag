@@ -32,7 +32,7 @@
 - `qwen3.5-plus` 是推理模型，思考过程会消耗 `max_tokens`（2048），长上下文时 `content` 被截断为空（`finish_reason=length`）。在 `get_chat_model()` 加 `extra_body={"enable_thinking": False}` 后稳定输出。
 
 ### 6. 为什么分块 overlap 定为 100
-- 早期存在双默认值：`data/splitter.py` 默认 150、`config/rag_config.py` 默认 100，pipeline 以 config 为准（线上实际 100），简历叙事却写"150 最佳"，无实验证据。
+- 早期存在双默认值：`data/splitter.py` 默认 150、`src/config/rag_config.py` 默认 100，pipeline 以 config 为准（线上实际 100），简历叙事却写"150 最佳"，无实验证据。
 - 2026-08-24 做对比实验定案：① 离线统计（全量 473 篇，overlap∈{50,100,150,200,250}）发现 `RecursiveCharacterTextSplitter` 实际重叠仅为请求值约一半（150 请求 → 实际 5.8%），表格行 49,917 块不受影响；② 检索命中对比（golden 引用子集 103 篇，100/150 双集合，K=50+Rerank）显示 **100 文件级命中全面领先、数字级持平**。
 - 结论：overlap=100 最优，`splitter.py` 默认已统一为 100，全量重建 57,178 点验证无退化。实验报告 `docs/overlap对比实验.md`。
 
@@ -41,7 +41,7 @@
 - **检索质量依赖数据**：`research_reports_v3_full` 集合若混入非研报数据，检索结果相关性下降（此前出现过客服类文档混入）。
 - **Agent 财务查询依赖 MySQL**：原生 SQL 链路（生成→执行→分析→ECharts）需 MySQL 可用；MySQL 不可用时返回友好错误提示，RAG 检索不受影响。
 - **前端为 React 19**：`qa-frontend/` 基于 React 19 + Vite + Tailwind（README 已同步修正）。
-- **LCEL 链路错误处理**：`chains/rag_chain.py` 的 `format_docs` 带大量 DEBUG print，生产可清理；链异常以文本拼接返回，缺少结构化错误。
+- **LCEL 链路错误处理**：`src/chains/rag_chain.py` 的 `format_docs` 带大量 DEBUG print，生产可清理；链异常以文本拼接返回，缺少结构化错误。
 - ~~**配置分散**：`RAGConfig` 与 `LangChainConfig` 双份配置~~ → 已解决（2026-08-22 合并到 `RAGConfig` 唯一来源，`langchain_config.py` 降为兼容层待删）。
 
 ## 后续优化方向
@@ -53,6 +53,6 @@
 5. 引入评估集：用项目需求集"问题汇总.xlsx"构建 QA 评测集，量化三链路效果差异。
 6. 补齐 Web 端 Agent 模式入口（前端框架描述已与代码统一，README 已修正为 React 19）。
 7. 收尾进展（2026-08-22）：阶段 3（Dify 职责收敛）已完成 —— 相关工具迁入 `src/tools/`，全部引用同步更新，消除根目录互相顶层 import；阶段 4（RAGConfig/LangChainConfig 双份配置合并）亦已完成，兼容层已删除。注：Dify 已于 2026-08-30 迁移原生 SQL 链路（`src/tools/native_financial.py`），相关工具与守卫逻辑已废弃。
-8. 收尾进展（2026-08-23）：Agent 编排后端对照（#9 实验）—— 新增 `agents/langgraph_planner.py`（LangGraph StateGraph 版，与自研 `AgentPlanner` 同 prompt/同 src/tools/同输出契约），默认仍用自研（`AGENT_PLANNER_BACKEND=handwritten`），LangGraph 标实验；对照口径见 `docs/LangGraph对照.md`。
+8. 收尾进展（2026-08-23）：Agent 编排后端对照（#9 实验）—— 新增 `src/agents/langgraph_planner.py`（LangGraph StateGraph 版，与自研 `AgentPlanner` 同 prompt/同 src/tools/同输出契约），默认仍用自研（`AGENT_PLANNER_BACKEND=handwritten`），LangGraph 标实验；对照口径见 `docs/LangGraph对照.md`。
 9. 收尾进展（2026-08-24）：SQL 守卫 + Agent 关思考 + LangGraph 全量回归 —— SQL 守卫（静态校验 + 全角标点检查 + MySQL 编译 + 失败带错误提示重问）挂接 Agent 工具循环两版共用（现为 `src/tools/sql_guard.py`，Dify 时代守卫逻辑已废弃）；Agent 循环统一关思考（`AGENT_ENABLE_THINKING=false` 默认）；LangGraph 后端同口径 80 题回归：91.3%（116/127）→ 守卫 v1 97.2%（104/107）→ 守卫 v2（yoy 字段白名单提示）**108/108 = 100.0%**，与手工基线 224/224 同口径持平；`docs/评估报告.md` 由 `python -m eval report` 自动聚合 LangGraph 指标小节。
 10. 收尾进展（2026-08-24）：overlap 分块参数统一 —— 双默认值（splitter 150 vs config 100）经对比实验（5 档离线统计 + 100/150 双集合检索命中对比）确认 **100 最优**；`splitter.py` 默认改为 100，`rebuild_full_index.py` 新增 `--chunk-overlap/--chunk-size` 参数，全量重建 `research_reports_v3_full`（57,178 点，33.6 分钟）验证指标无退化；简历/面试口径同步为"overlap 对比实验确认 100"。报告 `docs/overlap对比实验.md`。
