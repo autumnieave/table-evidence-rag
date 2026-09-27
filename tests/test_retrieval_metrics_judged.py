@@ -72,25 +72,25 @@ def test_recall_gives_half_credit_and_partial_counts_in_denominator():
     assert m["相关片段数"] == 2
     assert m["完全相关片段数"] == 1
     assert m["部分相关片段数"] == 1
-    assert m["Recall@10"] == 0.75
+    assert m["Hit Rate@10"] == 0.75
 
 
 def test_recall_is_one_when_only_full_relevant():
     chunks = [_c(judged=JUDGMENT_FULL), _c(judged=JUDGMENT_NONE)]
-    assert evaluate_judged_question(chunks)["Recall@10"] == 1.0
+    assert evaluate_judged_question(chunks)["Hit Rate@10"] == 1.0
 
 
 def test_recall_is_zero_when_no_relevant():
     chunks = [_c(judged=JUDGMENT_NONE), _c(judged=None, model=False)]
     m = evaluate_judged_question(chunks)
     assert m["相关片段数"] == 0
-    assert m["Recall@10"] == 0.0
+    assert m["Hit Rate@10"] == 0.0
 
 
 def test_partial_weight_is_configurable():
     chunks = [_c(judged=JUDGMENT_FULL), _c(judged=JUDGMENT_PARTIAL)]
-    assert evaluate_judged_question(chunks, partial_weight=0.0)["Recall@10"] == 0.5
-    assert evaluate_judged_question(chunks, partial_weight=1.0)["Recall@10"] == 1.0
+    assert evaluate_judged_question(chunks, partial_weight=0.0)["Hit Rate@10"] == 0.5
+    assert evaluate_judged_question(chunks, partial_weight=1.0)["Hit Rate@10"] == 1.0
 
 
 # --------------------------------------------------------------------------
@@ -108,7 +108,7 @@ def test_precision_denominator_counts_only_included_chunks():
     # 分子 = 1.0 + 0.5 = 1.5；分母 = 2（两条被排除）
     assert m["Precision@10"] == 0.75
     # 被排除的片段仍进 Recall：分子 1.5 / 分母 2
-    assert m["Recall@10"] == 0.75
+    assert m["Hit Rate@10"] == 0.75
 
 
 def test_precision_counts_all_chunks_when_field_absent():
@@ -166,7 +166,7 @@ def test_evaluate_judged_summary_and_zero_relevant_count():
     assert s["题数"] == 3
     assert s["跳过题数"] == 0
     assert s["零相关题数"] == 1
-    assert s["Recall@10"] == round((1.0 + 0.5 + 0.0) / 3, 4)
+    assert s["Hit Rate@10"] == round((1.0 + 0.5 + 0.0) / 3, 4)
     assert [q["bid"] for q in result["per_question"]] == ["B1", "B2", "B3"]
 
 
@@ -181,14 +181,14 @@ def test_evaluate_judged_skips_rows_without_any_label():
 def test_evaluate_judged_accepts_model_only_labels_via_fallback():
     row = {"bid": "B9", "chunks": [{"judge_relevant": True}, {"judge_relevant": False}]}
     result = evaluate_judged([row])
-    assert result["summary"]["Recall@10"] == 1.0
+    assert result["summary"]["Hit Rate@10"] == 1.0
     assert result["summary"]["零相关题数"] == 0
 
 
 def test_k_larger_than_chunk_count_is_safe():
     chunks = [_c(judged=JUDGMENT_FULL)]
     m = evaluate_judged_question(chunks, k_values=(10, 20))
-    assert m["Recall@10"] == m["Recall@20"] == 1.0
+    assert m["Hit Rate@10"] == m["Hit Rate@20"] == 1.0
 
 
 def test_has_judged_labels_detects_four_state_marks():
@@ -202,8 +202,8 @@ def test_has_judged_labels_detects_four_state_marks():
 def test_legacy_evaluate_still_uses_binary_model_judgment():
     rows = [{"bid": "B1", "chunks": [{"judge_relevant": True}, {"judge_relevant": False}]}]
     result = evaluate(rows, [10])
-    # legacy 退化口径：top-K 内有相关 → Recall@10 = 1.0（保持原行为）
-    assert result["summary"]["Recall@10"] == 1.0
+    # legacy 退化口径：top-K 内有相关 → Hit Rate@10 = 1.0（保持原行为）
+    assert result["summary"]["Hit Rate@10"] == 1.0
     assert result["summary"]["Precision@10"] == 0.5
     assert result["summary"]["MRR"] == 1.0
 
@@ -212,4 +212,4 @@ def test_legacy_ignores_four_state_field():
     """legacy 不认识 人工判定，只看 人工修正 / judge_relevant（口径隔离）"""
     rows = [{"bid": "B1", "chunks": [{"人工判定": JUDGMENT_FULL, "judge_relevant": False}]}]
     result = evaluate(rows, [10])
-    assert result["summary"]["Recall@10"] == 0.0
+    assert result["summary"]["Hit Rate@10"] == 0.0

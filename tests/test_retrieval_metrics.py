@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """B-24A：检索排序质量指标单测（纯逻辑，零外部依赖）
 
-覆盖：Recall@K / Precision@K / MRR 的边界、人工修正覆盖模型判定、汇总跳过逻辑。
+覆盖：Hit Rate@K / Precision@K / MRR 的边界、人工修正覆盖模型判定、汇总跳过逻辑。
 """
 from __future__ import annotations
 
@@ -57,8 +57,8 @@ def test_evaluate_question_prefers_human_correction():
     assert m["相关片段数"] == 1
     assert m["首相关排名"] == 2
     # 分母 = 标注集内相关数（3 条标注里 1 条相关）：k=1 未覆盖 -> 0；k=10 全覆盖 -> 1
-    assert m["Recall@1"] == 0.0
-    assert m["Recall@10"] == 1.0
+    assert m["Hit Rate@1"] == 0.0
+    assert m["Hit Rate@10"] == 1.0
     assert m["MRR"] == 0.5
 
 

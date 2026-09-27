@@ -39,5 +39,5 @@
 | 指标 | 值 |
 | --- | --- |
 | 相关片段数 / 标注片段数 | |
-| Recall@10 / Precision@10 / MRR | 用 `python eval/retrieval_metrics.py --labels <终稿 JSON>` 计算 |
+| Hit Rate@10 / Precision@10 / MRR | 用 `python eval/retrieval_metrics.py --labels <终稿 JSON>` 计算 |
 | 调参建议 | |

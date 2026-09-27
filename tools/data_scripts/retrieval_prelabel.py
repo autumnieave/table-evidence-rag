@@ -246,7 +246,7 @@ def write_template(path: Path) -> None:
 | 指标 | 值 |
 | --- | --- |
 | 相关片段数 / 标注片段数 | |
-| Recall@10 / Precision@10 / MRR | 用 `python eval/retrieval_metrics.py --labels <终稿 JSON>` 计算 |
+| Hit Rate@10 / Precision@10 / MRR | 用 `python eval/retrieval_metrics.py --labels <终稿 JSON>` 计算 |
 | 调参建议 | |
 """
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -387,8 +387,8 @@ def finish(args: argparse.Namespace, rows: List[Dict[str, Any]]) -> int:
         res = evaluate([{**r, "编号": r["bid"]} for r in rows], k_values=(args.top_k,))
         s = res["summary"]
         print("[prelabel] 草稿指标（模型预标注口径，未经人工审核，仅供参考）：")
-        print("  Recall@%d=%.4f ｜ Precision@%d=%.4f ｜ MRR=%.4f ｜ 题数 %d（跳过 %d）"
-              % (args.top_k, s["Recall@%d" % args.top_k], args.top_k, s["Precision@%d" % args.top_k], s["MRR"], s["题数"], s["跳过题数"]))
+        print("  Hit Rate@%d=%.4f ｜ Precision@%d=%.4f ｜ MRR=%.4f ｜ 题数 %d（跳过 %d）"
+              % (args.top_k, s["Hit Rate@%d" % args.top_k], args.top_k, s["Precision@%d" % args.top_k], s["MRR"], s["题数"], s["跳过题数"]))
     except Exception as exc:  # noqa: BLE001
         print("[prelabel] 草稿指标计算跳过: %s" % exc)
     return 0
