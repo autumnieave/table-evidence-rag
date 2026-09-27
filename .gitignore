@@ -51,6 +51,8 @@ _*.txt
 _*.log
 _*.ps1
 !**/__init__.py
+# `python -m eval` 入口：被上面的 _*.py 规则误伤，显式放行
+!eval/__main__.py
 
 # ===== 数据工具输出（可再生产物，不入 git） =====
 /failed_files.txt
