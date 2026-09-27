@@ -15,7 +15,7 @@
 外部依赖：
 
 - **阿里云百炼 DashScope API Key（必填）**：Embedding / Rerank / LLM 均走 DashScope
-- **MySQL（财务查询）**：Agent 财务数据查询走原生 SQL 链路（`tools/native_financial.py`），需本机 `3306` 可连；不可用时返回友好错误 JSON，RAG 检索不受影响。
+- **MySQL（财务查询）**：Agent 财务数据查询走原生 SQL 链路（`src/tools/native_financial.py`），需本机 `3306` 可连；不可用时返回友好错误 JSON，RAG 检索不受影响。
 
 ## 2. 前置条件
 

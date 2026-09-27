@@ -14,9 +14,9 @@
 - LCEL 链路跳过手写 Embedding/精排/生成逻辑，直接由链内 retriever 检索。
 - `query()` 返回 dict，交互层按 `content` 打印、按 `references` 输出引用；调用方需兼容 `dict` 与 `str` 两种返回（历史版本返回过 str）。
 - 手写与 LangChain 检索器共用 `_parse_filters_with_llm`（软过滤，不硬过滤）。
-- `tools/data_scripts/` 中的脚本（pdf处理+校验入库/重抽取/batch_test/list_files）为独立数据处理工具，**不参与在线问答链路**，勿在主流程中 import。
+- `src/tools/data_scripts/` 中的脚本（pdf处理+校验入库/重抽取/batch_test/list_files）为独立数据处理工具，**不参与在线问答链路**，勿在主流程中 import。
 
-## 2. Agent 工具清单（`tools/tools_registry.py` + `agents/planner.py`）
+## 2. Agent 工具清单（`src/tools/tools_registry.py` + `agents/planner.py`）
 
 `AgentPlanner.execute(user_query, history, user_id, verbose)` 使用 Function Calling，最多 **10 轮** 工具调用，最终输出 JSON：`{content, image[], references[]}`；超轮数时返回兜底 JSON。
 
@@ -29,8 +29,8 @@
 - 财务字段白名单定义在 `query_financial_and_visualize` 的 description 中（约 60+ 字段，含 `eps`、`roe`、`net_profit_yoy_growth` 等）。
 - 工具底层走 `tools.native_financial.native_financial_query`（原生 SQL：生成→MySQL 执行→分析→ECharts）；异常时 `call_financial_chatflow` 返回 `{"content": "查询失败: ...", "image": []}`，不抛异常。
 - Agent 模式入口：交互命令 `agent on` 直接启用，`RAGPipeline.agent_query()` 维护会话状态并调用 `agent_planner.execute()`。
-- **规划器后端**：`AGENT_PLANNER_BACKEND`（代码默认 `handwritten` 自研 `AgentPlanner`；`langgraph` 为 LangGraph 后端，同 prompt/同 tools/同输出契约）；交互命令 `planner handwritten|langgraph` 切换，`status` 显示当前后端。**当前运行环境通过 `.env` 切换为 `langgraph` + `AGENT_LANGGRAPH_MULTI_AGENT=true`，即 supervisor-workers 多 Agent 为主链路，`handwritten` 为回退路径。** 对照口径见 `docs/评估报告/LangGraph对照.md`。
-- **SQL 守卫**：SQL 生成经 `tools/sql_guard.py` 静态校验（表名/别名/字段归属/子查询表名 + 全角标点）+ MySQL 编译终审，失败把错误与字段建议拼回问题重问；配置 `AGENT_SQL_VALIDATE`（默认开）/ `AGENT_NATIVE_RETRY`（默认 2 次）/ `MYSQL_*`。
+- **规划器后端**：`AGENT_PLANNER_BACKEND`（代码默认 `handwritten` 自研 `AgentPlanner`；`langgraph` 为 LangGraph 后端，同 prompt/同 src/tools/同输出契约）；交互命令 `planner handwritten|langgraph` 切换，`status` 显示当前后端。**当前运行环境通过 `.env` 切换为 `langgraph` + `AGENT_LANGGRAPH_MULTI_AGENT=true`，即 supervisor-workers 多 Agent 为主链路，`handwritten` 为回退路径。** 对照口径见 `docs/评估报告/LangGraph对照.md`。
+- **SQL 守卫**：SQL 生成经 `src/tools/sql_guard.py` 静态校验（表名/别名/字段归属/子查询表名 + 全角标点）+ MySQL 编译终审，失败把错误与字段建议拼回问题重问；配置 `AGENT_SQL_VALIDATE`（默认开）/ `AGENT_NATIVE_RETRY`（默认 2 次）/ `MYSQL_*`。
 - **Agent 思考模式**：`AGENT_ENABLE_THINKING`（默认 `false`，qwen3.5-plus 推理模型必须关闭，避免耗尽 max_tokens）。
 
 ## 3. 交互命令（简要版）

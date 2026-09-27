@@ -25,7 +25,7 @@ RAG 金融研报智能问数系统：基于检索增强生成（RAG）的上市�
 | `pipelines/` | `RAGPipeline`：全流程编排（build_index / query / agent_query / conversational_query / 增量插入） |
 | `scripts/` | 交互式问答入口：`interactive_mode` / `main`（含 CLI 参数解析） |
 | `app/` | FastAPI 入口包：`api.py`（路由/SSE/静态挂载）、`schemas.py`（请求响应模型）；`uvicorn app.api:app` |
-| `tools/` | Agent 工具注册表（`tools_registry.py`）、原生财务查询（`native_financial.py`：SQL 生成→MySQL 执行→分析→ECharts）、SQL 校验守卫（`sql_guard.py`）；`tools/typo_normalizer.py`（错别字归一化）；`tools/data_scripts/` 存放数据处理脚本（pdf处理+校验入库/重抽取/batch_test/list_files） |
+| `src/tools/` | Agent 工具注册表（`tools_registry.py`）、原生财务查询（`native_financial.py`：SQL 生成→MySQL 执行→分析→ECharts）、SQL 校验守卫（`sql_guard.py`）；`src/tools/typo_normalizer.py`（错别字归一化）；`src/tools/data_scripts/` 存放数据处理脚本（pdf处理+校验入库/重抽取/batch_test/list_files） |
 | `utils/` | 通用工具：表格聚合、摘要生成、引用构建（`helpers.py`） |
 
 ### 补充登记（2026-09-10 核对：模块速览遗漏项）
@@ -42,7 +42,7 @@ RAG 金融研报智能问数系统：基于检索增强生成（RAG）的上市�
 | `prompts/examples/` | few-shot 示例库（B-15 示例库 + B-16 三态开关：none/static/dynamic） |
 | `agents/langgraph_planner.py` | LangGraph StateGraph 单 Agent 编排（对照实验） |
 | `agents/langgraph_multi_agent.py` | **当前主链路**：supervisor-workers 多 Agent 协作 |
-| `tools/typo_normalizer.py` | 错别字归一化（对抗挑战集 B-28 修复） |
+| `src/tools/typo_normalizer.py` | 错别字归一化（对抗挑战集 B-28 修复） |
 | `utils/output_contracts.py` | 输出契约校验（B-17，四类校验 + 事件落盘） |
 | `utils/query_cache.py` | SQLite 查询缓存（并行/缓存路线 1，2026-08-30） |
 | `.github/workflows/ci-layered.yml` | 分层 CI（L1 必过 / L2 默认关 / L3 nightly 占位，B-21A） |
@@ -51,7 +51,7 @@ RAG 金融研报智能问数系统：基于检索增强生成（RAG）的上市�
 
 ## 目录结构（2026-08 整理后）
 
-- 源码包：`app/ core/ eval/ config/ data/ embeddings/ vectorstore/ chains/ llm/ agents/ memory/ filters/ pipelines/ scripts/ tools/ utils/`
+- 源码包：`app/ core/ eval/ config/ data/ embeddings/ vectorstore/ chains/ llm/ agents/ memory/ filters/ pipelines/ scripts/ src/tools/ utils/`
 - 运行核心：`rag_全流程构建.py`（CLI 启动器，委托 `scripts.interactive`）、`app/`（FastAPI 包，`uvicorn app.api:app` 启动）
 - `notebooks/`：数据分析 Notebook（pdf解析 等）
 - `database/`：SQL 建表脚本、数据 CSV
@@ -71,7 +71,7 @@ RAG 金融研报智能问数系统：基于检索增强生成（RAG）的上市�
 - **单元测试**：新增纯逻辑模块（校验器/分块/解析器/存储层等）必须配 `tests/` 用例，测试不得依赖外部服务（Qdrant/MySQL/LLM）；改代码后本地跑 `python -m pytest tests/ -q`，CI 在 `.github/workflows/ci.yml` 自动执行。
 - **配置**：新增可调参数优先加在 `config/rag_config.py`（支持环境变量覆盖），不要在函数内硬编码。
 - **编码**：所有源文件保持 UTF-8，不要引入 BOM。
-- **脚本位置**：新增数据处理脚本放 `tools/data_scripts/`，禁止放根目录；临时调试脚本用 `_` 前缀（会被 `.gitignore` 忽略，不入库）。
+- **脚本位置**：新增数据处理脚本放 `src/tools/data_scripts/`，禁止放根目录；临时调试脚本用 `_` 前缀（会被 `.gitignore` 忽略，不入库）。
 - **Prompt 管理**：所有 Prompt 统一放 `prompts/` 包（RAG 问答 / 字段提取 / 摘要 / 图片检测 / Agent），禁止在业务代码内联新增 Prompt；修改模板后更新 `prompts/__init__.py` 的 `PROMPT_VERSION`。
 
 ## 修改代码时的注意事项
