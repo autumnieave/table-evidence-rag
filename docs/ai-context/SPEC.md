@@ -54,11 +54,11 @@
 
 | 命令 | 作用 |
 | --- | --- |
-| `python rag_cli.py --build` | 仅构建索引 |
-| `python rag_cli.py --rebuild` | 强制重建索引（清空现有数据） |
-| `python rag_cli.py --query "问题"` | 单次查询（非交互） |
-| `python rag_cli.py --add-stock` | 增量插入个股研报 |
-| `python rag_cli.py --add-industry` | 增量插入行业研报 |
+| `python cli.py --build` | 仅构建索引 |
+| `python cli.py --rebuild` | 强制重建索引（清空现有数据） |
+| `python cli.py --query "问题"` | 单次查询（非交互） |
+| `python cli.py --add-stock` | 增量插入个股研报 |
+| `python cli.py --add-industry` | 增量插入行业研报 |
 
 ## 4. 其他功能规格要点
 

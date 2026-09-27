@@ -244,12 +244,14 @@ def interactive_mode(pipeline):
 
 def main():
     """
-    主入口函数
+    主入口函数（RAG + SQL 智能问数 CLI）
 
-    支持两种运行模式：
-    - 无参数：交互式问答模式
-    - --build：仅构建索引
-    - --rebuild：强制重建索引
+    支持 4 类用法（共 8 个命令行参数）：
+    - 无参数：交互式问答模式（内含 agent on/off，可走 Agent 双链路）
+    - --build：仅构建向量索引（增量）；--rebuild：强制重建索引（清空现有数据）
+    - --query "问题"：单次 RAG 问答；--config：自定义配置 JSON 路径
+    - --add-stock / --add-industry：增量插入个股 / 行业研报
+    - --validate-refs / --refs-mode：L1 引用核验（独立运行，无需 API Key）
     """
     # Windows GBK 控制台无法编码 emoji（如 ✅/⚠️），统一使用 UTF-8 并容错，避免打印崩溃
     if hasattr(sys.stdout, "reconfigure"):
@@ -258,7 +260,7 @@ def main():
 
     import argparse
 
-    parser = argparse.ArgumentParser(description="RAG全流程构建脚本")
+    parser = argparse.ArgumentParser(description="RAG + SQL 智能问数 CLI")
     parser.add_argument("--build", action="store_true", help="构建向量索引")
     parser.add_argument("--rebuild", action="store_true", help="强制重建索引（会清空现有数据）")
     parser.add_argument("--query", type=str, help="单次查询模式，传入问题文本")
@@ -306,12 +308,6 @@ def main():
     else:
         # 默认进入交互模式
         interactive_mode(pipeline)
-
-
-if __name__ == "__main__":
-    main()
-
-
 
 
 if __name__ == "__main__":

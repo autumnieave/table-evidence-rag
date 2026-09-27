@@ -1,12 +1,11 @@
-"""rag_cli.py - RAG全流程构建入口文件（CLI 启动器）
+"""cli.py - RAG全流程构建入口文件（CLI 启动器）
 
 仅负责环境初始化并委托 scripts.interactive.main，具体逻辑见 scripts/。
 
-使用方式: python rag_cli.py
+使用方式: python cli.py
 """
 
 import logging
-import os
 import sys
 
 from dotenv import load_dotenv

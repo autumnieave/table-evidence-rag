@@ -52,7 +52,7 @@ RAG 金融研报智能问数系统：基于检索增强生成（RAG）的上市�
 ## 目录结构（2026-08 整理后）
 
 - 源码包：`src/app/ src/core/ eval/ src/config/ src/data/ src/embeddings/ src/vectorstore/ src/chains/ src/llm/ src/agents/ src/memory/ src/filters/ src/pipelines/ scripts/ src/tools/ src/utils/`
-- 运行核心：`rag_cli.py`（CLI 启动器，委托 `scripts.interactive`）、`src/app/`（FastAPI 包，`uvicorn app.api:app` 启动）
+- 运行核心：`cli.py`（CLI 启动器，委托 `scripts.interactive`）、`src/app/`（FastAPI 包，`uvicorn app.api:app` 启动）
 - `notebooks/`：数据分析 Notebook（pdf解析 等）
 - `database/`：SQL 建表脚本、数据 CSV
 - `docs/`：项目文档与资料（论文/、问题记录/、评估报告/、ai-context/ 四份 AI 上下文文档：SPEC / CONTEXT / TECH_NOTES / AI_CONTEXT）
@@ -64,7 +64,7 @@ RAG 金融研报智能问数系统：基于检索增强生成（RAG）的上市�
 - **Python 版本**：3.11（`.venv` 已配置）；Windows 下统一用 `.\.venv\Scripts\python` 执行。
 - **类型注解**：所有公开函数/方法必须带类型注解（`-> List[Dict[str, Any]]` 等）。
 - **docstring**：使用中文、`"""三引号"""` 风格，写清参数与返回值（参照现有模块）。
-- **模块划分**：新增功能放入对应职责模块，禁止在主入口 `rag_cli.py` 写业务逻辑。
+- **模块划分**：新增功能放入对应职责模块，禁止在主入口 `cli.py` 写业务逻辑。
 - **链路接口**：新链路/新组件必须实现 `src/core/interfaces.py` 的三协议（`IRetriever/IReranker/IGenerator`），`src/pipelines/rag_pipeline.py` 的 `query()`/`conversational_query()` 统一走接口，禁止直连具体类。
 - **评估入口**：回归/核验统一走 `python -m eval`（golden 版本化 + sql 套件 + citation + report），禁止另起散装评估脚本；新增评估套件放入 `eval/` 或登记到 `eval/runner.py` 的 `SQL_SUITES`。
 - **会话记忆**：会话状态存取统一走 `RAGPipeline._load_conversation/_save_conversation/reset_conversation`（按 `user_id` 持久化），禁止直接改 `conversation_state` 绕过存储；新状态字段必须支持 `to_dict/from_dict` 序列化。
@@ -90,18 +90,18 @@ RAG 金融研报智能问数系统：基于检索增强生成（RAG）的上市�
 
 ```bash
 # 启动交互式问答
-python rag_cli.py
+python cli.py
 
 # 构建 / 强制重建索引
-python rag_cli.py --build
-python rag_cli.py --rebuild
+python cli.py --build
+python cli.py --rebuild
 
 # 单次查询（非交互）
-python rag_cli.py --query "贵州茅台近期业绩如何"
+python cli.py --query "贵州茅台近期业绩如何"
 
 # 增量插入个股 / 行业研报
-python rag_cli.py --add-stock
-python rag_cli.py --add-industry
+python cli.py --add-stock
+python cli.py --add-industry
 
 # 语法检查（改完文件必跑）
 python -m py_compile scripts/interactive.py src/pipelines/rag_pipeline.py
