@@ -14,7 +14,7 @@ RAG 金融研报智能问数系统：基于检索增强生成（RAG）的上市�
 | `src/prompts/` | 唯一 Prompt 目录：`rag.py`（RAG 问答，手写/LCEL 同源）、`pipeline.py`（字段提取/摘要/图片检测）、`agent.py`（Agent system prompt）、`financial.py`（SQL 生成）/ `multi_agent.py`（supervisor-workers）、`fallback.py`（兜底话术）、`examples/`（few-shot 示例库）、`registry.json`（版本注册表，**唯一事实源**）；新增 Prompt 一律放此，修改后同步 registry 版本 |
 | `src/core/` | 链路收敛接口：`interfaces.py`（`IRetriever/IReranker/IGenerator` 三协议）、`retrievers.py`（`HandwrittenRetriever` 自研基线=代码默认 / `HybridRetriever` 混合检索（`HYBRID_ENABLED` **默认 true**，即**当前默认使用**）/ `LangChainRetriever` 对照实验）、`rerankers.py` + `generators.py`（适配层） |
 | `eval/` | 评估闭环：`golden.py`（golden set 版本化，`database/golden/`，本地资产不入库）、`runner.py`（`python -m eval` 统一入口：golden / sql / citation / report / **llm-judge / challenge / consistency**）、`metrics.py`（报告聚合）、`answer_keys.py`（答案先验三态登记）、`llm_judge.py`（LLM-as-judge）、`consistency.py`（同题一致率）、`retrieval_metrics.py`（Recall@K / MRR）、`challenge.py`（对抗挑战集 v2） |
-| `data/` | 研报 Markdown 加载、Excel 元数据匹配、文本分块与 HTML/Markdown 表格抽取 |
+| `src/data/` | 研报 Markdown 加载、Excel 元数据匹配、文本分块与 HTML/Markdown 表格抽取 |
 | `src/embeddings/` | `EmbeddingClient`：通过 DashScope HTTP API 生成向量（text-embedding-v2，1536 维） |
 | `src/vectorstore/` | `QdrantClientWrapper`：Qdrant 集合读写、检索、清空封装 |
 | `src/chains/` | `LangChainRAGChain`（LCEL 完整链路）、`RerankClient`（qwen3-rerank 精排）；Prompt 已移至 `src/prompts/` |
@@ -51,7 +51,7 @@ RAG 金融研报智能问数系统：基于检索增强生成（RAG）的上市�
 
 ## 目录结构（2026-08 整理后）
 
-- 源码包：`src/app/ src/core/ eval/ src/config/ data/ src/embeddings/ src/vectorstore/ src/chains/ src/llm/ src/agents/ src/memory/ src/filters/ src/pipelines/ scripts/ src/tools/ src/utils/`
+- 源码包：`src/app/ src/core/ eval/ src/config/ src/data/ src/embeddings/ src/vectorstore/ src/chains/ src/llm/ src/agents/ src/memory/ src/filters/ src/pipelines/ scripts/ src/tools/ src/utils/`
 - 运行核心：`rag_全流程构建.py`（CLI 启动器，委托 `scripts.interactive`）、`src/app/`（FastAPI 包，`uvicorn app.api:app` 启动）
 - `notebooks/`：数据分析 Notebook（pdf解析 等）
 - `database/`：SQL 建表脚本、数据 CSV
@@ -78,7 +78,7 @@ RAG 金融研报智能问数系统：基于检索增强生成（RAG）的上市�
 
 - **改 `src/pipelines/` 需同步检查 `scripts/interactive.py` 与 `src/app/api.py`**：它们直接调用 `RAGPipeline` 的方法与属性（`query`、`agent_query`、`build_index`、`agent_mode_enabled` 等），改名/删参会导致入口崩溃。
 - **改 `src/config/rag_config.py` 的 `get_chat_model()`**：`qwen3.5-plus` 是推理模型，必须保留 `extra_body={"enable_thinking": False}`，否则思考过程会耗尽 `max_tokens` 导致空回答。
-- **分块口径已统一为 overlap=100**（2026-08-24 对比实验确认最优：`docs/评估报告/overlap对比实验.md`）：`data/splitter.py` 默认与 `src/config/rag_config.py` 的 `CHUNK_OVERLAP` 一致（100），pipeline 显式传 config 值。改分块参数必须同步两处默认值并重建索引，否则新旧语料混用。
+- **分块口径已统一为 overlap=100**（2026-08-24 对比实验确认最优：`docs/评估报告/overlap对比实验.md`）：`src/data/splitter.py` 默认与 `src/config/rag_config.py` 的 `CHUNK_OVERLAP` 一致（100），pipeline 显式传 config 值。改分块参数必须同步两处默认值并重建索引，否则新旧语料混用。
 - **改 Embedding 调用**：DashScope v2 的 HTTP API payload 必须是 `{"input": {"texts": [...]}}`（`input` 是对象不是数组），参数用 `text_type`；不要改回 `dashscope.TextEmbedding.call`（SDK 版本不兼容）。
 - **改 `src/chains/rag_chain.py`**：retriever 必须只接收 question 字符串（通过 `RunnablePassthrough.assign` 提取），不能把整个输入 dict 传给 retriever，否则 `embed_query` 会收到 dict 报错。
 - **改 `src/pipelines/rag_pipeline.py` 的 `get_vectorstore()`**：必须走 `get_vector_store_direct`（带 `validate_collection_config=False`），不能改回 `from_existing_collection`（会触发 `embed_documents(["dummy_text"])` 维度验证报错）。

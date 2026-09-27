@@ -32,9 +32,9 @@ flowchart TD
     end
 
     subgraph DATA["数据层"]
-        LD["data/loader.py<br/>文档加载"]
-        SP["data/splitter.py<br/>分块/表格抽取"]
-        MD["data/metadata.py<br/>Excel 元数据"]
+        LD["src/data/loader.py<br/>文档加载"]
+        SP["src/data/splitter.py<br/>分块/表格抽取"]
+        MD["src/data/metadata.py<br/>Excel 元数据"]
         QD["Qdrant<br/>docker-compose.yml"]
         DOCS["docs/ 论文/文档"]
     end
@@ -63,7 +63,7 @@ flowchart TD
 | `src/app/` | FastAPI 入口包（2026-08-22 收敛自根目录 `app.py`）：路由/SSE/静态挂载 + 请求响应模型；启动 `uvicorn app.api:app` | `app`（FastAPI 实例）、`ChatRequest`、`ChatResponse`、`ClarifyRequest` |
 | `src/core/` | 链路收敛接口（2026-08-22）：`IRetriever/IReranker/IGenerator` 三协议 + 默认/实验检索器 + 适配层 | `IRetriever`、`IReranker`、`IGenerator`、`HandwrittenRetriever`、`LangChainRetriever`、`RerankerAdapter`、`GeneratorAdapter` |
 | `eval/` | 评估闭环（2026-08-22）：golden set 版本化（`database/golden/`，本地资产不入库）+ SQL/引用回归统一入口 + 报告聚合 | `golden`（init/list/verify）、`runner`（`python -m eval`）、`metrics`（报告生成） |
-| `data/` | 文档加载、分块、表格抽取、Excel 元数据匹配 | `load_markdown_documents`、`split_documents`、`extract_tables_and_text`、`get_best_metadata_for_title` |
+| `src/data/` | 文档加载、分块、表格抽取、Excel 元数据匹配 | `load_markdown_documents`、`split_documents`、`extract_tables_and_text`、`get_best_metadata_for_title` |
 | `src/embeddings/` | DashScope HTTP 向量化（`{"input":{"texts":[...]}}`） | `EmbeddingClient.generate_embeddings` |
 | `src/vectorstore/` | Qdrant 写入/检索封装 | `QdrantClientWrapper` |
 | `src/chains/` | LCEL 链、Rerank（Prompt 已移至 `src/prompts/`） | `LangChainRAGChain`、`create_rag_chain`、`RerankClient` |
@@ -82,12 +82,12 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    A["load_markdown_documents<br/>data/loader.py"] --> B["extract_tables_and_text<br/>data/splitter.py"]
+    A["load_markdown_documents<br/>src/data/loader.py"] --> B["extract_tables_and_text<br/>src/data/splitter.py"]
     B --> C["recursive_split_text / split_documents"]
     C --> D["EmbeddingClient<br/>src/embeddings/client.py"]
     D --> E["QdrantClientWrapper<br/>src/vectorstore/qdrant_wrapper.py"]
     E --> F["Qdrant 集合"]
-    A -.元数据.-> G["load_excel_metadata_by_title<br/>data/metadata.py"]
+    A -.元数据.-> G["load_excel_metadata_by_title<br/>src/data/metadata.py"]
 ```
 
 ### 4.2 问答主链路（query）
@@ -141,7 +141,7 @@ flowchart LR
 - `get_config()`：全局单例（src/config/rag_config.py）
 - `src/config/langchain_config.py`：兼容层，仅保留 `EmbeddingClientAdapter` 与 `LangChainConfig = RAGConfig` 别名，下一阶段删除
 
-### 5.3 数据层（data/）
+### 5.3 数据层（src/data/）
 
 - `load_markdown_documents` / `load_industry_documents`：加载财报/研报目录
 - `split_documents` / `recursive_split_text`：文本分块

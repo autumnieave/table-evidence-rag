@@ -16,7 +16,7 @@
 - SQL 守卫族（src/tools/sql_validator.py / sql_guard.py / financial_mean_guard.py）——B-07~B-12 均以“规则守卫 + 单测”双重闭环，SQL 编译通过率 100% 基线稳定。
 - L1 引用核验（src/pipelines/citation_validator.py + tests/test_citation_validator.py）——自动核验 + 报告证据链，文件可溯源 1080/1080 两次复验一致。
 - 缓存与记忆基础设施（src/utils/query_cache.py、src/memory/store.py 的 SQLite 后端）——有独立单测（test_query_cache / test_memory / test_pipeline_memory）覆盖。
-- 分块与表聚合（data/splitter.py、src/utils/helpers.py + test_splitter / test_table_agg_topk）——overlap=100 经 5 档对比实验固化，代码 / config / pipeline 三处口径统一。
+- 分块与表聚合（src/data/splitter.py、src/utils/helpers.py + test_splitter / test_table_agg_topk）——overlap=100 经 5 档对比实验固化，代码 / config / pipeline 三处口径统一。
 - 离线评估入口（eval/runner + golden v1：80 题 / 108 子问题 / 291 句，不可变快照 + sha256 防篡改；golden v2 对抗挑战集 18 条/5 类，2026-09-10 按 B-29 方案 B 修订 C2018 后重固化）。
 - prompts 版本注册表（src/prompts/registry.json，7 条登记：6 业务模块 + 包级；当前包级 2026-09-10-v6、financial v10、multi_agent v3、fallback v3、agent/rag/pipeline v1）+ 防漂移单测（tests/test_prompt_registry.py）。
 - 出口守卫族（src/agents/langgraph_multi_agent.py：`_guard_injection_prefix` 注入先拒答、`_guard_research_advice` 研报预测/评级转述口径 + 免责）+ 单测 27 例。

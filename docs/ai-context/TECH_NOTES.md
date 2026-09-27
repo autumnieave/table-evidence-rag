@@ -50,7 +50,7 @@
 | 向量维度 | 1536（text-embedding-v2，COSINE） | `RAGConfig.VECTOR_DIMENSION` |
 | 向量召回 K | 50（`RETRIEVAL_K`） | 三条链路共用 |
 | Rerank 精排 TopN | 10（`RERANK_TOP_N`） | qwen3-rerank，仅手写/LangChain 检索器链路 |
-| 文本分块 | CHUNK_SIZE 1024 / overlap 100 | `data/splitter` 与 `config` 统一 100（2026-08-24 对比实验确认，见 `docs/overlap对比实验.md`） |
+| 文本分块 | CHUNK_SIZE 1024 / overlap 100 | `src/data/splitter` 与 `config` 统一 100（2026-08-24 对比实验确认，见 `docs/overlap对比实验.md`） |
 | Embedding 批处理 | batch_size=10，指数退避重试 3 次 | `src/embeddings/client.py` |
 | Agent 工具调用上限 | 10 轮 | `src/agents/planner.py` |
 

@@ -32,7 +32,7 @@
 - `qwen3.5-plus` 是推理模型，思考过程会消耗 `max_tokens`（2048），长上下文时 `content` 被截断为空（`finish_reason=length`）。在 `get_chat_model()` 加 `extra_body={"enable_thinking": False}` 后稳定输出。
 
 ### 6. 为什么分块 overlap 定为 100
-- 早期存在双默认值：`data/splitter.py` 默认 150、`src/config/rag_config.py` 默认 100，pipeline 以 config 为准（线上实际 100），简历叙事却写"150 最佳"，无实验证据。
+- 早期存在双默认值：`src/data/splitter.py` 默认 150、`src/config/rag_config.py` 默认 100，pipeline 以 config 为准（线上实际 100），简历叙事却写"150 最佳"，无实验证据。
 - 2026-08-24 做对比实验定案：① 离线统计（全量 473 篇，overlap∈{50,100,150,200,250}）发现 `RecursiveCharacterTextSplitter` 实际重叠仅为请求值约一半（150 请求 → 实际 5.8%），表格行 49,917 块不受影响；② 检索命中对比（golden 引用子集 103 篇，100/150 双集合，K=50+Rerank）显示 **100 文件级命中全面领先、数字级持平**。
 - 结论：overlap=100 最优，`splitter.py` 默认已统一为 100，全量重建 57,178 点验证无退化。实验报告 `docs/overlap对比实验.md`。
 
