@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "src"))
 GOLDEN_PATH = REPO_ROOT / "database" / "golden" / "v1_2026-08-22.json"
 REFS_PATH = REPO_ROOT / "训练结果数据" / "references_all.json"
 DEFAULT_OUT = REPO_ROOT / "docs" / "检索对比报告.md"

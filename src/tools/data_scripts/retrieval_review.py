@@ -34,7 +34,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]  # 仓库根（数据路径）
 
 DEFAULT_LABELS = PROJECT_ROOT / "训练结果数据" / "retrieval_prelabel_20260910.json"
 DEFAULT_CACHE = PROJECT_ROOT / "训练结果数据" / "retrieval_review_cache.json"

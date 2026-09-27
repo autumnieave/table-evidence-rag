@@ -44,8 +44,8 @@ jobs:
       - name: Run unit tests + coverage gate
         run: |
           pytest tests/ -v --tb=short \
-            --cov=core --cov=tools.sql_guard --cov=tools.sql_validator \
-            --cov=pipelines.citation_validator --cov=utils.query_cache \
+            --cov=src/core --cov=src/tools/sql_guard.py --cov=src/tools/sql_validator.py \
+            --cov=src/pipelines/citation_validator.py --cov=src/utils/query_cache.py \
             --cov-report=term-missing --cov-fail-under=80
 
   # ==================== 第 2 层：组件回归 + golden 子集（mock 版，离线） ====================

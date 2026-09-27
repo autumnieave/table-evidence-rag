@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +21,8 @@ from eval import golden as golden_mod
 from eval import metrics as metrics_mod
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "src"))
 
 #: SQL 回归套件 → tools/data_scripts 模块名
 SQL_SUITES = {
@@ -94,7 +97,9 @@ def cmd_sql(args: argparse.Namespace) -> int:
     if getattr(args, "progress_every", 0):
         cmd += ["--progress-every", str(args.progress_every)]
     print("+ " + " ".join(cmd))
-    return subprocess.call(cmd, cwd=str(REPO_ROOT))
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(REPO_ROOT / "src") + os.pathsep + env.get("PYTHONPATH", "")
+    return subprocess.call(cmd, cwd=str(REPO_ROOT), env=env)
 
 
 def cmd_citation(args: argparse.Namespace) -> int:

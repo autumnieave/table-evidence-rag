@@ -20,7 +20,7 @@ import prompts.rag
 from prompts import PROMPT_VERSION
 
 _ROOT = Path(__file__).resolve().parents[1]
-_REGISTRY_PATH = _ROOT / "prompts" / "registry.json"
+_REGISTRY_PATH = _ROOT / "src" / "prompts" / "registry.json"
 
 
 def _load_registry() -> dict:

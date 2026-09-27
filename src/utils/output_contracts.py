@@ -34,7 +34,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 #: 默认事件落盘路径（运行时数据目录，已被 .gitignore 忽略）
-DEFAULT_STATS_PATH = Path(__file__).resolve().parents[1] / "训练结果数据" / "output_contract_stats.jsonl"
+DEFAULT_STATS_PATH = Path(__file__).resolve().parents[2] / "训练结果数据" / "output_contract_stats.jsonl"
 #: 可用 env 关闭事件落盘（校验逻辑不受影响）
 _STATS_ENV = "OUTPUT_CONTRACT_STATS"
 

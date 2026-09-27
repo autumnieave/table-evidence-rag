@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-_EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "prompts" / "examples"
+_EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "src" / "prompts" / "examples"
 
 _REQUIRED_ENTRY_KEYS = {"question", "metric", "sql", "note", "pitfall"}
 _REQUIRED_METRIC_KEYS = {"standard_fields", "time_grain", "calculation", "filter_terms"}

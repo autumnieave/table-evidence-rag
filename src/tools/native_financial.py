@@ -906,7 +906,7 @@ def _dump_chart_failure(question: str, text: str, finish_reason: Optional[str]) 
     try:
         from pathlib import Path
 
-        target = Path(__file__).resolve().parents[1] / "训练结果数据" / "chart_parse_failures.jsonl"
+        target = Path(__file__).resolve().parents[2] / "训练结果数据" / "chart_parse_failures.jsonl"
         target.parent.mkdir(parents=True, exist_ok=True)
         record = {
             "ts": time.time(),

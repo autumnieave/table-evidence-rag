@@ -35,8 +35,6 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-
 
 def _stdout_utf8() -> None:
     """Windows 控制台统一 UTF-8 输出"""

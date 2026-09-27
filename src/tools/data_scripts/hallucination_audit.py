@@ -29,9 +29,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+_REPO_ROOT = Path(__file__).resolve().parents[3]  # 仓库根（数据路径）
+if str(_REPO_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / "src"))
 
 GOLDEN = _REPO_ROOT / "database" / "golden" / "v1_2026-08-22.json"
 SQL_REGRESSION = _REPO_ROOT / "训练结果数据" / "sql_full_regression_native.json"

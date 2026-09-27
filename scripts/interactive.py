@@ -8,6 +8,11 @@ import json
 import os
 import sys
 import logging
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / "src"))
 
 from pipelines.rag_pipeline import RAGPipeline
 from pipelines.citation_validator import CitationValidator

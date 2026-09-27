@@ -33,8 +33,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+if str(REPO_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "src"))
 
 #: 真实重跑纪律：关闭查询缓存，避免命中旧缓存污染判定（先于 config 导入生效）
 os.environ["QUERY_CACHE_ENABLED"] = "false"

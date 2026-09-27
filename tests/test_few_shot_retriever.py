@@ -21,7 +21,7 @@ from utils.few_shot_retriever import (
     predict_type,
 )
 
-_EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "prompts" / "examples"
+_EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "src" / "prompts" / "examples"
 
 
 def _plan(kind: str, mode: str = "single", **extra: object) -> dict:

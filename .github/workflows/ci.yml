@@ -26,6 +26,6 @@ jobs:
       - name: Run unit tests
         run: |
           pytest tests/ -v --tb=short \
-            --cov=core --cov=tools.sql_guard --cov=tools.sql_validator \
-            --cov=pipelines.citation_validator --cov=utils.query_cache \
+            --cov=src/core --cov=src/tools/sql_guard.py --cov=src/tools/sql_validator.py \
+            --cov=src/pipelines/citation_validator.py --cov=src/utils/query_cache.py \
             --cov-report=term-missing --cov-fail-under=80
