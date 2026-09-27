@@ -1,0 +1,8 @@
+# pyproject.toml —— pytest 的路径根配置（⑤ src 收口：15 个业务包移入 src/）
+#
+# 需要两个路径根：
+#   src —— 迁移后的业务包（config/pipelines/tools/app/…）
+#   .   —— 留在仓库根的包（eval/、scripts/），保证 `python -m eval …` 与 bare `pytest` 都可用
+# 注：ruff 配置独立在 ruff.toml（优先于 pyproject），此处不影响 lint。
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
