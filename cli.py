@@ -1,4 +1,4 @@
-"""cli.py - RAG全流程构建入口文件（CLI 启动器）
+"""cli.py - RAG + SQL 智能问数 CLI 入口
 
 仅负责环境初始化并委托 scripts.interactive.main，具体逻辑见 scripts/。
 

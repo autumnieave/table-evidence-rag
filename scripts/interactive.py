@@ -3,7 +3,6 @@ scripts/interactive.py
 交互式问答模式和主入口函数
 """
 
-import argparse
 import json
 import os
 import sys
@@ -17,7 +16,6 @@ if str(_REPO_ROOT / "src") not in sys.path:
 from pipelines.rag_pipeline import RAGPipeline
 from pipelines.citation_validator import CitationValidator
 from config.rag_config import RAGConfig
-from memory import ConversationState
 
 logger = logging.getLogger(__name__)
 
