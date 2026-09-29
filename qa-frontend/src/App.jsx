@@ -12,6 +12,40 @@ const STORAGE_KEY = 'chatHistory';
 const SESSIONS_KEY = 'chatSessionsV2';
 const MAX_SESSIONS = 5;
 
+// 演示模式：答案正文与引用原文按数据版权脱敏，仅保留界面结构（VITE_DEMO_MASK=1 或 URL 带 ?demo=1）
+const DEMO_MASK = import.meta.env.VITE_DEMO_MASK === '1'
+  || new URLSearchParams(window.location.search).has('demo');
+const MASK_REF_TEXT = '引用内容';
+const MASK_REF_NAME = '引用来源';
+const MASK_REF_IMAGE = '引用配图';
+const mask = (value, placeholder) => (DEMO_MASK ? placeholder : value);
+
+// 研报原文为 LaTeX 转换产物，含 $1 8 . 9 0 \%$ 这类排版残留；
+// 展示前轻量清洗，避免用户读到乱码级上下文。只作用于「数字命中位置」的上下文展示，
+// 不改动后端核验口径，也不动「原文片段」正文。
+const deLatex = (value) => (value || '')
+  .replace(/\$([^$]{1,120})\$/g, (_m, body) => body.replace(/\s+/g, ''))
+  .replace(/\$([^$]*)$/, (_m, body) => body.replace(/\s+/g, ''))
+  .replace(/\\([%$&#_{}])/g, '$1')
+  .replace(/\\[a-zA-Z]+/g, ' ')
+  .replace(/[{}]/g, '')
+  .replace(/\\/g, '')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+// 演示模式下的正文呈现：固定五行高，把「演示内容」放在中间那行的正中间（水平+垂直居中）。
+// 目的只是把版式撑起来；配合右上角「演示模式」角标即可读懂。
+const DemoAnswer = () => (
+  <div
+    className="grid h-[120px] rounded-xl border border-amber-200 bg-amber-50/40"
+    style={{ gridTemplateRows: 'repeat(5, minmax(0, 1fr))' }}
+  >
+    <div className="row-start-3 flex items-center justify-center text-sm text-amber-700 select-none">
+      演示内容
+    </div>
+  </div>
+);
+
 // 会话工具：每个会话独立 id / user_id（隔离后端记忆），最多 MAX_SESSIONS 个
 const genId = () => 's-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
 const makeSession = (messages = []) => {
@@ -71,21 +105,21 @@ const SUGGESTIONS = {
   ],
 };
 
-// 引用核验状态徽章
+// 引用来源核验标记：只暴露用户能理解的一件事——来源文件是否已核验存在。
+// exact（路径精确命中）与 fuzzy（按文件名/目录尾段匹配）都属已核验，不再挂牌自证；
+// 也不暴露 exact/fuzzy 这类实现术语，避免每条引用都挂告警色造成误导。
 const CitationBadge = ({ citation }) => {
   if (!citation) return null;
   const map = {
-    exact: ['bg-green-100 text-green-700', '文件可溯源'],
-    fuzzy: ['bg-yellow-100 text-yellow-700', '模糊匹配'],
-    missing: ['bg-red-100 text-red-700', '文件缺失'],
+    fuzzy: ['bg-gray-100 text-gray-500', '来源已核对', '文件名与语料库中的研报一致'],
+    missing: ['bg-red-100 text-red-700', '来源未核验', '引用文件在语料库中不存在'],
   };
-  const [cls, label] = map[citation.status] || ['bg-gray-100 text-gray-600', citation.status || '未知'];
-  const unhit = citation.unhit || [];
+  const entry = map[citation.status];
+  if (!entry) return null;
+  const [cls, label, tip] = entry;
   return (
-    <span className={`inline-block px-1.5 py-0.5 rounded text-[11px] font-medium whitespace-nowrap ${cls}`}>
+    <span className={`inline-block px-1.5 py-0.5 rounded text-[11px] font-medium whitespace-nowrap ${cls}`} title={tip}>
       {label}
-      {citation.nums > 0 && ` · 数字 ${citation.num_hit}/${citation.nums}`}
-      {unhit.length > 0 && ` · ${unhit.length} 个未命中`}
     </span>
   );
 };
@@ -307,13 +341,17 @@ function App() {
       let image = [];
       let references = [];
       let chartJson = null;
+      let lineBuffer = ''; // SSE 事件可能跨 TCP 分片，必须缓存残行
+      let sawReports = false; // 本次是否走过研报检索（用于引用缺失自诊断）
+      let finalPhase = false; // final 之后的终稿阶段：静默累积，等 done 一次性落地
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n');
+        lineBuffer += decoder.decode(value, { stream: true });
+        const lines = lineBuffer.split('\n');
+        lineBuffer = lines.pop() || ''; // 最后一段可能不完整，留到下个分片再拼
 
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue;
@@ -328,15 +366,19 @@ function App() {
               if (parsed.chart_json) chartJson = parsed.chart_json;
             } else if (parsed.type === 'stage') {
               setStage(parsed.stage);
+              if (parsed.stage === 'search_reports') sawReports = true;
             } else if (parsed.type === 'final') {
-              // 混合题：研报草稿流式结束后，最终汇总答案以 final 事件重置后重发
+              // 混合题：草稿与终稿高度重复，逐字重放会像"打印两遍"——改为静默累积，等 done 一次性落地
+              finalPhase = true;
               fullContent = '';
             } else if (parsed.type === 'content') {
               fullContent += parsed.text;
-              updateMessage(aiMsgId, { content: fullContent, image, references, chart_json: chartJson });
+              if (!finalPhase) { // 终稿阶段不逐字重放
+                updateMessage(aiMsgId, { content: fullContent, image, references, chart_json: chartJson });
+              }
             } else if (parsed.type === 'done') {
               setStage(null);
-              updateMessage(aiMsgId, { content: fullContent, image, references, chart_json: chartJson, isStreaming: false });
+              updateMessage(aiMsgId, { content: fullContent, image, references, chart_json: chartJson, isStreaming: false, refsMissing: sawReports && references.length === 0 });
             } else if (parsed.type === 'error') {
               setStage(null);
               updateMessage(aiMsgId, { content: `❌ ${parsed.message || '生成出错'}`, isStreaming: false, error: true });
@@ -399,58 +441,64 @@ function App() {
   // 渲染引用（可展开原文）
   const renderReferences = (msg) => {
     if (!msg.references || msg.references.length === 0) return null;
+    // 演示模式只展示第一条引用的完整格式框架，其余折成省略号（保留真实条数）
+    const refs = DEMO_MASK ? msg.references.slice(0, 1) : msg.references;
+    const hiddenRefs = msg.references.length - refs.length;
 
-    // 高亮命中数字在原文上下文中的位置
+    // 高亮命中数字在原文上下文中的位置（展示前清洗 LaTeX 排版残留）
     const renderHitContext = (h) => {
-      const idx = (h.context || '').indexOf(h.num);
-      if (idx < 0) return h.context;
+      const context = deLatex(h.context);
+      const idx = context.indexOf(h.num);
+      if (idx < 0) return context;
       return (
         <>
-          {h.context.slice(0, idx)}
+          {context.slice(0, idx)}
           <mark className="bg-yellow-100 text-green-700 font-semibold px-0.5 rounded">{h.num}</mark>
-          {h.context.slice(idx + h.num.length)}
+          {context.slice(idx + h.num.length)}
         </>
       );
     };
     return (
       <div className="mt-3 space-y-1.5">
         <div className="font-medium text-gray-600 text-sm">📚 参考来源（{msg.references.length}）</div>
-        {msg.references.map((ref, idx) => {
+        {refs.map((ref, idx) => {
           const citation = ref.citation;
           const unhit = citation?.unhit || [];
           return (
             <div key={idx} className="border border-gray-200 rounded-lg p-2 bg-gray-50/60">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-gray-700 text-xs font-medium truncate" title={ref.paper_path || ''}>
-                  {idx + 1}. {basename(ref.paper_path) || '未知来源'}
+                <span className="text-gray-700 text-xs font-medium truncate" title={DEMO_MASK ? '' : (citation?.located || ref.paper_path || '')}>
+                  {idx + 1}. {mask(basename(ref.paper_path) || '未知来源', MASK_REF_NAME)}
                 </span>
                 <CitationBadge citation={citation} />
               </div>
               {ref.paper_image && (
-                <div className="text-[11px] text-gray-400 truncate mt-1">📊 {basename(ref.paper_image)}</div>
+                <div className="text-[11px] text-gray-400 truncate mt-1">📊 {mask(basename(ref.paper_image), MASK_REF_IMAGE)}</div>
               )}
               {citation && citation.nums > 0 && (
-                <details className="mt-1">
-                  <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 select-none">数字核验明细</summary>
-                  <div className="text-[11px] text-gray-500 mt-1 space-y-0.5 bg-white/70 rounded p-1.5">
-                    <div>
-                      数字命中：
-                      <span className={unhit.length > 0 ? 'text-orange-600 font-medium' : 'text-green-600 font-medium'}>
-                        {citation.num_hit}/{citation.nums}
-                      </span>
-                    </div>
-                    {unhit.length > 0 && (
+                citation.num_hit === citation.nums ? (
+                  <div className="text-[11px] text-gray-400 mt-1">✓ {citation.nums} 个数字已与研报原文核对</div>
+                ) : (
+                  <details className="mt-1" open>
+                    <summary className="text-[11px] text-orange-600 cursor-pointer select-none">
+                      数字核验明细（{unhit.length} 个未命中）
+                    </summary>
+                    <div className="text-[11px] text-gray-500 mt-1 space-y-0.5 bg-white/70 rounded p-1.5">
+                      <div>
+                        数字命中：
+                        <span className="text-orange-600 font-medium">{citation.num_hit}/{citation.nums}</span>
+                      </div>
                       <div>未命中数字：<span className="text-red-600">{unhit.join('、')}</span></div>
-                    )}
-                    {unhit.length === 0 && <div className="text-green-600">✓ 全部命中</div>}
-                    {citation.located && <div className="truncate">定位文件：{basename(citation.located)}</div>}
-                  </div>
-                </details>
+                    </div>
+                  </details>
+                )
               )}
               {ref.text && (
                 <details className="mt-1">
-                  <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 select-none">查看原文</summary>
-                  <div className="text-[11px] text-gray-500 mt-1 whitespace-pre-wrap max-h-28 overflow-y-auto">{ref.text}</div>
+                  <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 select-none">
+                    {`原文片段（${ref.chunk_total ? `第 ${ref.chunk_index + 1}/${ref.chunk_total} 块 · ` : ''}${ref.text_truncated ? `前 ${ref.text.length} 字 / 共 ${ref.text_total} 字` : `共 ${ref.text_total || ref.text.length} 字`}）`}
+                  </summary>
+                  <div className="text-[11px] text-gray-500 mt-1 whitespace-pre-wrap max-h-28 overflow-y-auto">{mask(ref.text, MASK_REF_TEXT)}</div>
                 </details>
               )}
 
@@ -463,15 +511,25 @@ function App() {
                     {citation.hits_context.map((h, i) => (
                       <div key={i} className="leading-relaxed">
                         <span className="text-green-700 font-medium mr-1">#{h.num}</span>
-                        <span>…{renderHitContext(h)}…</span>
+                        <span>…{DEMO_MASK ? MASK_REF_TEXT : renderHitContext(h)}…</span>
                       </div>
                     ))}
                   </div>
+                  {!DEMO_MASK && (
+                    <div className="text-[10px] text-gray-400 mt-1 pt-1 border-t border-gray-200/70">
+                      原文含 LaTeX 排版残留，展示前已清洗
+                    </div>
+                  )}
                 </details>
               )}
             </div>
           );
         })}
+        {hiddenRefs > 0 && (
+          <div className="text-center text-xs text-gray-400 py-1 select-none">
+            ⋯ 其余 {hiddenRefs} 条已省略 ⋯
+          </div>
+        )}
       </div>
     );
   };
@@ -484,18 +542,27 @@ function App() {
 
     return (
       <div className="space-y-2">
-        <div className="prose prose-sm max-w-none">
-          <Markdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeHighlight]}
-          >
-            {msg.content}
-          </Markdown>
-        </div>
+        {DEMO_MASK && !msg.error && !msg.stopped ? (
+          <DemoAnswer />
+        ) : (
+          <div className="prose prose-sm max-w-none">
+            <Markdown
+              remarkPlugins={[remarkGfm]}
+              rehypePlugins={[rehypeHighlight]}
+            >
+              {msg.content}
+            </Markdown>
+          </div>
+        )}
 
         {renderImages(msg)}
         {msg.chart_json ? <ChartView option={msg.chart_json} /> : null}
         {renderReferences(msg)}
+        {msg.refsMissing && (
+          <div className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
+            ⚠️ 本次未收到引用数据（流式事件可能被截断），刷新页面重试即可
+          </div>
+        )}
 
         {msg.isStreaming && !msg.content && stage && (
           <div className="flex items-center gap-2 mt-1 text-sm text-gray-500">
@@ -572,6 +639,11 @@ function App() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {DEMO_MASK && (
+              <span className="px-2 py-0.5 rounded-md text-xs border border-amber-300 bg-amber-50 text-amber-700 whitespace-nowrap" title="演示模式：答案与引用内容已按数据版权脱敏，界面结构保持真实">
+                🔒 演示模式 · 内容已脱敏
+              </span>
+            )}
             <button
               onClick={clearHistory}
               className={`px-2.5 py-1.5 rounded-lg text-xs border transition-colors ${
