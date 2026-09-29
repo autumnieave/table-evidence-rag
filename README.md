@@ -2,11 +2,15 @@
 
 面向上市公司研报与财报的端到端智能问答系统：用户用自然语言即可查询财务数据、研报观点，答案带引用可溯源。采用 **LangGraph 多 Agent 编排 + SQL 财务链路 + RAG 研报链路**，配套 FastAPI / React 前端与完整评估闭环。
 
+**数据规模**：473 篇上市公司研报（MinerU 解析，OCR + 表格 + 公式）+ 1252 份深圳证券交易所 / 上海证券交易所财报 PDF，抽取后入 MySQL。
+
+项目演示：多 Agent 编排（LangGraph supervisor-workers）、Text-to-SQL 质量闭环、混合检索与精排、五层评测体系、全栈部署。
+
 [![CI](https://github.com/autumnieave/smart-financial-qa/actions/workflows/ci.yml/badge.svg)](https://github.com/autumnieave/smart-financial-qa/actions/workflows/ci.yml) [![tests](https://img.shields.io/badge/531%20tests-passing-brightgreen)]() [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 ## 核心指标
 
-- **SQL 编译通过率：96.9% → 100%**（80 题全量回归；最新口径 **103/103** @2026-09-10 提示词 v10，有 SQL 题 69/69 全通过、失败 0；历史口径 Agent 224/224、原生 SQL 102/102、137/137@2026-09-05，分母各不相同，不可直接对比）
+- **SQL 编译通过率 100%**（80 题全量回归，多意图拆分后共 103 条 SQL，103/103 全部通过；提示词 v10，有 SQL 需求的题 69/69）
 - **引用文件可溯源 100%（1080/1080）**、**答案数字可溯源 99.9%（4068/4071，归一化口径；3 项未溯源为非数据 token）**，人工回查真实幻觉 **0 例**
 - **531 个离线单测全部通过**（531 用例 / 39 个测试文件，零外部依赖，CI 自动执行）
 - 数字级引用命中率 **70.2% → 74.9%**（混合检索：向量 + BM25 + RRF）
@@ -45,9 +49,26 @@ flowchart TD
     end
 ```
 
+## 数据与评估资产说明
+
+- **原始数据不随仓库分发**（原始数据，按版权不公开）：研报语料按 `docs/DEPLOYMENT.md` 放置后运行 `python cli.py --build` 构建索引；财务数据由公开财报经 `src/tools/data_scripts/pdf处理+校验入库.py` 抽取入库（表结构见 `database/schema.sql`，仅建表、不含数据）。
+- **评估资产为本地 gitignored 资产，不入库**：golden 快照（`database/golden/`，80 题/108 子问题评估基准）、字段抽取记录（`database/extracted_missing_fields.csv`）及各回归明细 JSON 仅保存在本地，用于复现文档中的评估口径。
+- **可复现范围**：源码、离线单测（零外部依赖）、CI 与评估框架完整入库，clone 后即可运行；完整数据与评估基准需按文档自备。
+- **安全提示**：MySQL 默认密码（`MYSQL_ROOT_PASSWORD` / `MYSQL_PASSWORD` = `123456`）仅用于本地开发，生产/公网部署务必通过 `.env` 修改。
+
 ## 快速开始
 
-### 1. 环境准备
+### 最短验证（零依赖）
+
+```bash
+# clone 后零依赖验证，不需要 API Key / 数据库 / Qdrant
+pip install -r requirements.txt
+python -m pytest tests/ -q    # 531 个离线单测
+```
+
+### 完整服务
+
+#### 1. 环境准备
 
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
@@ -55,7 +76,7 @@ pip install -r requirements.txt
 # 可复现构建（版本锁定）：pip install -r requirements.lock.txt
 ```
 
-### 2. 配置环境变量
+#### 2. 配置环境变量
 
 复制 `.env.example` 为 `.env` 并填写：
 
@@ -64,14 +85,14 @@ DASHSCOPE_API_KEY=sk-xxx        # 阿里云百炼 DashScope（必填）
 MYSQL_HOST=127.0.0.1            # MySQL 财务库（原生财务查询链路，非 Docker 模式需自备）
 ```
 
-### 3. 启动 Qdrant 并构建索引
+#### 3. 启动 Qdrant 并构建索引
 
 ```bash
 docker compose up -d qdrant     # 或本地 Qdrant（localhost:6333）
 python cli.py --build
 ```
 
-### 4. 启动服务
+#### 4. 启动服务
 
 ```bash
 # 交互式问答
@@ -84,20 +105,10 @@ uvicorn app.api:app --app-dir src --reload --port 8000
 cd qa-frontend && npm install && npm run dev
 
 # 或 Docker Compose 一键启动（Qdrant + 后端 + Nginx 前端，访问 http://localhost:8080）
-# 注意：compose 内不含 MySQL 服务，后端连宿主已导入数据的 MySQL（host.docker.internal:3306，可在 .env 改 MYSQL_*）；
-# 全新环境无外部 MySQL 时，请先按 docs/DEPLOYMENT.md 自备 MySQL，或在 docker-compose.yml 中自行补 mysql 服务块
 docker compose up -d --build
 ```
 
-{anchor}
-
-### 数据与评估资产说明
-
-- **原始数据不随仓库分发**（原始数据，按版权不公开）：研报语料按 `docs/DEPLOYMENT.md` 放置后运行 `python cli.py --build` 构建索引；财务数据由公开财报经 `src/tools/data_scripts/pdf处理+校验入库.py` 抽取入库（表结构见 `database/schema.sql`，仅建表、不含数据）。
-- **评估资产为本地 gitignored 资产，不入库**：golden 快照（`database/golden/`，80 题/108 子问题评估基准）、字段抽取记录（`database/extracted_missing_fields.csv`）及各回归明细 JSON 仅保存在本地，用于复现文档中的评估口径。
-- **可复现范围**：源码、离线单测（零外部依赖）、CI 与评估框架完整入库，clone 后即可运行；完整数据与评估基准需按文档自备。
-- **安全提示**：MySQL 默认密码（`MYSQL_ROOT_PASSWORD` / `MYSQL_PASSWORD` = `123456`）仅用于本地开发，生产/公网部署务必通过 `.env` 修改。
-
+⚠️ **Docker Compose 不含 MySQL**：需先自备 MySQL 并导入数据；全新环境请按 `docs/DEPLOYMENT.md` 准备，或在 `docker-compose.yml` 自行补 mysql 服务块。
 
 ## 交互命令
 
@@ -153,6 +164,8 @@ database/       SQL 建表脚本（schema.sql，仅结构不含数据）
 ```
 
 ## 相关文档
+
+**快速了解**：`docs/评估报告/评估报告.md`（核心指标汇总）、`docs/ARCHITECTURE.md`（架构与现状）。
 
 | 文档 | 内容 |
 | --- | --- |
