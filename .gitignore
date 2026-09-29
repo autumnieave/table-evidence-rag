@@ -58,6 +58,13 @@ _*.ps1
 /failed_files.txt
 /*.csv
 
+# ===== 数据文件兜底（递归覆盖，防误提交） =====
+**/*.pdf
+**/*.csv
+**/*.xlsx
+database/*.sql
+!database/schema.sql
+
 # ===== 文档（二进制 / 面试材料，不上传 GitHub） =====
 docs/论文/
 docs/*.pdf
