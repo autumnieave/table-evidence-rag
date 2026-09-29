@@ -5,7 +5,8 @@ pipelines/citation_validator.py
 核验两层：
 1. 文件可溯源：引用 paper_path 是否能在语料库中定位到真实文件
    - exact：路径字符串与磁盘文件名完全一致
-   - fuzzy：归一化（引号 / 双反斜杠 / 空白 / 目录层级差异）后在全库索引中唯一定位
+   - fuzzy：归一化（引号 / 双反斜杠 / 空白）后按目录尾段重定位到语料根下，或由全库文件名索引唯一定位
+            （目录层级差异，如外部数据集路径 vs 本地语料目录）
    - missing：两层均失败，引用文件在语料库中不存在
 2. 数字可溯源：引文 text 中的数字是否能在目标文件全文中找到
    - 匹配口径 raw / comma / loose，默认 comma（千分位逗号归一化）
@@ -102,6 +103,42 @@ def _norm_key(filename: str) -> str:
     return unicodedata.normalize("NFC", s)
 
 
+
+def _relocate_under_corpus_root(path: str, corpus_root: Optional[str]) -> Optional[str]:
+    """把外部路径串重定位到语料根下（目录层级差异重定位）。
+
+    引用里的路径可能是外部数据结构下的相对路径（如
+    ``B题数据及提交说明\\全部数据\\正式数据\\附件5：研报数据\\行业研报-解析结果-2.0\\x.md``），
+    而本地语料根是另一处目录（如 ``data_corpus/全部数据/正式数据/附件5：研报数据``）。
+    此时取「与语料根同名目录」之后的尾段拼到语料根下，可按目录结构唯一定位文件，
+    优于仅凭文件名在全库索引中兜底（同名文件只能取第一个）。
+
+    Args:
+        path: 已归一化为当前平台分隔符的路径
+        corpus_root: 语料库根目录
+
+    Returns:
+        语料根下的绝对路径；无法重定位时返回 None
+    """
+    if not corpus_root or not os.path.isdir(corpus_root):
+        return None
+    parts = [p for p in path.split(os.sep) if p not in ("", ".")]
+    if not parts:
+        return None
+    root_name = os.path.basename(os.path.normpath(corpus_root))
+    tail: Optional[List[str]] = None
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i] == root_name:
+            tail = parts[i + 1:]
+            break
+    if tail is None:
+        # 路径中不含语料根目录名：退化为「文件名拼语料根」
+        tail = [parts[-1]]
+    if not tail:
+        return None
+    candidate = os.path.join(corpus_root, *tail)
+    return os.path.abspath(candidate) if os.path.isfile(candidate) else None
+
 class CitationValidator:
     """引用核验器（L1）
 
@@ -113,9 +150,9 @@ class CitationValidator:
                     loose=comma+去全部空白
     """
 
-    # 命中数字上下文提取参数（供前端"查看原文"展示数字在文件全文中的位置）
+    # 命中数字上下文提取参数（供前端「数字命中位置」展示数字在研报原文中的位置）
     MAX_CONTEXT_CHARS: int = 300
-    MAX_HIT_CONTEXTS: int = 3
+    MAX_HIT_CONTEXTS: int = 8
 
     def __init__(self, corpus_root: Optional[str] = None, match_mode: str = "comma") -> None:
         self.corpus_root = corpus_root
@@ -152,7 +189,13 @@ class CitationValidator:
         return self._index
 
     def locate(self, paper_path: str) -> Tuple[str, Optional[str]]:
-        """定位引用文件。
+        """定位引用文件（三层）。
+
+        1. exact：归一化路径在磁盘上直接存在；
+        2. fuzzy（目录层级重定位）：路径尾段（语料根同名目录之后的部分）拼到 corpus_root 下
+           存在真实文件。引用来自外部挂载路径（如比赛数据集目录）时走这一层，
+           按目录结构唯一定位，不依赖文件名猜测；
+        3. fuzzy（全库文件名索引）：归一化文件名在全库索引中唯一定位（最后兜底）。
 
         Args:
             paper_path: 引用中的文件路径
@@ -165,6 +208,9 @@ class CitationValidator:
         normalized = paper_path.replace("\\\\", "\\").replace("\\", os.sep)
         if os.path.exists(normalized):
             return "exact", os.path.abspath(normalized)
+        relocated = _relocate_under_corpus_root(normalized, self.corpus_root)
+        if relocated is not None:
+            return "fuzzy", relocated
         key = _norm_key(os.path.basename(normalized))
         resolved = self.index.get(key)
         if resolved is not None:

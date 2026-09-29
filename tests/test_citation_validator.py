@@ -26,6 +26,38 @@ def test_fuzzy_locate(tmp_path):
     assert status == "fuzzy" and located
 
 
+def test_relocate_by_directory_tail_not_basename_guess(tmp_path):
+    # 外部数据集路径（B题数据及提交说明\...\附件5：研报数据\子目录\x.md）应
+    # 按「语料根同名目录之后的尾段」重定位到本地语料根下，而不是靠文件名在全库索引里猜
+    root = tmp_path / "附件5：研报数据"
+    (root / "行业研报-解析结果-2.0").mkdir(parents=True)
+    (root / "个股研报-解析结果-2.0").mkdir(parents=True)
+    industry = root / "行业研报-解析结果-2.0" / "同名报告.md"
+    stock = root / "个股研报-解析结果-2.0" / "同名报告.md"
+    industry.write_text("行业口径 12.5 亿元", encoding="utf-8")
+    stock.write_text("个股口径 99.9 亿元", encoding="utf-8")
+    v = CitationValidator(corpus_root=str(root))
+    external = "B题数据及提交说明\\全部数据\\正式数据\\附件5：研报数据\\行业研报-解析结果-2.0\\同名报告.md"
+    status, located = v.locate(external)
+    assert status == "fuzzy" and located
+    assert located == str(industry.resolve())
+    # 数字核验也应落到被引用的那一份文件，而不是同名的另一份
+    rec = v.check_reference(external, "行业口径 12.5 亿元")
+    assert rec["num_hit"] == rec["nums"] == 1
+    wrong = v.check_reference(external, "个股口径 99.9 亿元")
+    assert wrong["num_hit"] == 0
+
+
+def test_relocate_rejects_nonexistent_tail(tmp_path):
+    # 尾段在语料根下不存在时不得凭空命中（保持 missing）
+    root = tmp_path / "语料根名"
+    root.mkdir()
+    (root / "a.md").write_text("营收 1 亿元", encoding="utf-8")
+    v = CitationValidator(corpus_root=str(root))
+    status, located = v.locate("外部\\语料根名\\子目录\\不存在.md")
+    assert status == "missing" and located is None
+
+
 def test_missing_locate(tmp_path):
     v = CitationValidator(corpus_root=str(tmp_path))
     status, located = v.locate("不存在.md")

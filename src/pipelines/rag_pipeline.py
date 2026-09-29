@@ -798,13 +798,18 @@ class RAGPipeline:
             logger.warning(f"LLM提取图片标题失败: {e}")
             return ""
 
-    def _build_reference_for_doc(self, idx: int, search_results: List[Dict], candidate_docs: List[str], aggregated_meta: Dict[int, Dict[str, Any]] = None, index_map: Optional[Dict[int, int]] = None) -> Dict[str, str]:
+    def _build_reference_for_doc(self, idx: int, search_results: List[Dict], candidate_docs: List[str], aggregated_meta: Dict[int, Dict[str, Any]] = None, index_map: Optional[Dict[int, int]] = None) -> Dict[str, Any]:
         """根据候选文档索引构建引用条目，提取图表标题作为 paper_image。
 
         idx 是聚合后候选列表的位置；index_map（聚合返回）负责回映射到原始 search_results 索引，
         避免聚合导致 paper_path/摘要取错文件。
+
+        text 是引用片段（非表格块默认该块前 200 字），并附 chunk_index / chunk_total /
+        text_total / text_truncated，供前端如实标注片段来源位置与截断情况。
         """
         orig_idx = index_map.get(idx, idx) if index_map else idx
+        chunk_index: Optional[int] = None
+        chunk_total: Optional[int] = None
         if aggregated_meta and idx in aggregated_meta:
             meta = aggregated_meta[idx]
             paper_path = meta.get("paper_path", "聚合表格/多源")
@@ -816,6 +821,8 @@ class RAGPipeline:
         elif orig_idx < len(search_results):
             payload = search_results[orig_idx]["payload"]
             paper_path = payload.get("source", "")
+            chunk_index = payload.get("chunk_index")
+            chunk_total = payload.get("chunk_total")
             full_text = candidate_docs[idx] if idx < len(candidate_docs) else payload.get("content", "")
             # 优先使用预生成的摘要
             summary_text = payload.get("summary")
@@ -836,6 +843,11 @@ class RAGPipeline:
         if not paper_image:
             paper_image = self._extract_image_title_with_llm(full_text)
 
+        # 引用片段口径：text 是该块内容的截断片段（非表格块默认前 200 字），
+        # 前端据 text_total / text_truncated 标注「第 i/j 块 · 前 N 字 / 共 M 字」，避免被误读为完整原文
+        text_total = len(full_text)
+        text_truncated = len(summary_text) < text_total
+
         # 表格占位符（研报 md 中的 [TABLE_PLACEHOLDER_N] / [表格_N]）在引文中无内容，
         # 替换为明确提示，避免"查看原文"只看到占位符（表格行引用已由聚合逻辑补充内容）
         summary_text = re.sub(
@@ -847,7 +859,11 @@ class RAGPipeline:
         return {
             "paper_path": paper_path,
             "text": summary_text,
-            "paper_image": paper_image
+            "paper_image": paper_image,
+            "chunk_index": chunk_index,
+            "chunk_total": chunk_total,
+            "text_total": text_total,
+            "text_truncated": text_truncated,
         }
     
     def _load_conversation(self, user_id: str) -> ConversationState:
