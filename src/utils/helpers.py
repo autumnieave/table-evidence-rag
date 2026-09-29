@@ -1,5 +1,4 @@
 import time
-import re
 import json
 import hashlib
 from pathlib import Path
@@ -140,47 +139,3 @@ def _extract_image_title_with_llm(llm_client, text: str) -> str:
         return title
     except Exception:
         return ""
-
-
-def _build_reference_for_doc(
-    idx: int,
-    search_results: List[Dict],
-    candidate_docs: List[str],
-    aggregated_meta: Dict[int, Dict[str, Any]] = None,
-    llm_client=None
-) -> Dict[str, str]:
-    """根据候选文档索引构建引用条目，提取图表标题作为 paper_image"""
-    if aggregated_meta is None:
-        aggregated_meta = {}
-
-    if idx in aggregated_meta:
-        meta = aggregated_meta[idx]
-        paper_path = meta.get("paper_path", "聚合表格/多源")
-        full_text = candidate_docs[idx]
-        summary_text = '这是一个表格'
-    elif idx < len(search_results):
-        payload = search_results[idx]["payload"]
-        paper_path = payload.get("source", "")
-        full_text = candidate_docs[idx] if idx < len(candidate_docs) else payload.get("content", "")
-        summary_text = payload.get("summary")
-        if not summary_text:
-            summary_text = full_text[:200]
-    else:
-        paper_path = "未知来源"
-        full_text = candidate_docs[idx] if idx < len(candidate_docs) else ""
-        summary_text = full_text[:200]
-
-    paper_image = ""
-    chart_pattern = r'图表\s*\d+\s*[：:]\s*[^\n]+'
-    match = re.search(chart_pattern, full_text)
-    if match:
-        paper_image = match.group(0).strip()
-
-    if not paper_image and llm_client is not None:
-        paper_image = _extract_image_title_with_llm(llm_client, full_text)
-
-    return {
-        "paper_path": paper_path,
-        "text": summary_text,
-        "paper_image": paper_image
-    }
