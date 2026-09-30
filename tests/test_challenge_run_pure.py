@@ -53,7 +53,8 @@ def _summary() -> dict:
 def test_report_contains_header_and_summary():
     md = cr.build_report_markdown(_summary())
     assert "对抗挑战集 v2 · 阶段 B 真实执行报告" in md
-    assert "auto" in md  # 合计行
+    assert "| **合计** |" in md  # 合计行
+    assert "自动判定：pending（待人工）" in md  # 未回填时人工复核列回落自动判定状态
     assert "通过率 100%" in md
     assert "待人工 1 条" in md
 
