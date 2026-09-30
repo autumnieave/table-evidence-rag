@@ -36,7 +36,7 @@
 - **LangGraph supervisor-workers 多 Agent 编排**：supervisor 拆解任务，财务（SQL）/ 研报（RAG）子 Agent 并行取数，单任务直出、多任务聚合；条件边路由 + checkpoint 按 `user_id` 持久化会话；自研手写 RAG 与多轮澄清链路保留，供 CLI 本地回归使用
 - **SQL 生成质量闭环**：自然语言 → Schema + 字段白名单 → 静态校验 → MySQL 试运行（15s 超时）→ 执行 + 自动分析与 ECharts 图表，失败自动带错误重试
 - **混合检索**：Qdrant 向量 + BM25 关键词 + RRF 融合，经 `qwen3-rerank` 精排后生成
-- **五层评测体系**：引用核验（自研引用核验器，答案数字与引用文件自动对应）/ SQL 编译 / 答案质量 / 对抗挑战集 / 代理指标，各层分母不同、各覆盖一类失败模式，**不合成单一分数**（详见「评测体系」）
+- **五层评测体系**：引用核验（自研引用核验器，答案数字与引用文件自动对应）/ SQL 编译 / 答案质量 / 对抗挑战集 / 检索排序质量，各层分母不同、各覆盖一类失败模式，**不合成单一分数**（详见「评测体系」）
 - **记忆持久化**：SQLite 默认 / Redis 可选，按 `user_id` 存取，服务重启后上下文可恢复
 - **全栈可部署**：FastAPI（REST + SSE 流式）+ React 19 + Qdrant + Docker Compose
 
@@ -68,7 +68,7 @@ flowchart TD
 ## 数据与评估资产说明
 
 - **原始数据不随仓库分发**（原始数据，按版权不公开）：研报语料按 `docs/DEPLOYMENT.md` 放置后运行 `python cli.py --build` 构建索引；财务数据由公开财报经 `src/tools/data_scripts/pdf处理+校验入库.py` 抽取入库（表结构见 `database/schema.sql`，仅建表、不含数据）。
-- **评估资产为本地 gitignored 资产，不入库**：golden 快照（`database/golden/`，80 题/108 子问题评估基准）、字段抽取记录（`database/extracted_missing_fields.csv`）及各回归明细 JSON 仅保存在本地，用于复现文档中的评估口径。
+- **评估资产为本地 gitignored 资产，不入库**：golden 快照（`database/golden/`，含 80 题 / 108 子问题评估基准**及 v2 挑战集 18 条**（`challenge_sources/`、`v2_2026-09-10.json`））、字段抽取记录（`database/extracted_missing_fields.csv`）及各回归明细 JSON 仅保存在本地，用于复现文档中的评估口径。
 - **可复现范围**：源码、离线单测（零外部依赖）、CI 与评估框架完整入库，clone 后即可运行；完整数据与评估基准需按文档自备。
 - **安全提示**：MySQL 默认密码（`MYSQL_ROOT_PASSWORD` / `MYSQL_PASSWORD` = `123456`）仅用于本地开发，生产/公网部署务必通过 `.env` 修改。
 
@@ -145,14 +145,16 @@ python -m pytest tests/ -q        # 540 个离线单测 / 40 个测试文件（�
 python -m eval citation           # L1 引用核验（需本地语料）
 python -m eval sql --suite full   # L2 SQL 全量回归（需本地 golden 数据）
 python -m eval llm-judge          # L3 答案质量（LLM-as-judge，需本地 golden 数据）
+python -m eval consistency        # L3 同题一致性（同题 n 次生成，需本地 golden + LLM）
 python -m eval challenge --run    # L4 对抗挑战集（18 条 / 5 类）
+python -m eval.retrieval_metrics --labels <人工终稿>.json   # L5 检索排序质量（Hit Rate@K / Precision@K / MRR，需人工标注 JSON）
 python -m eval report             # 聚合评估报告（覆盖核心指标）
 ```
 
 > 说明：`python -m eval` 依赖本地评估资产（golden 快照等，不入库），缺失时仅影响评估复现，不影响系统运行；单测不依赖任何外部服务与数据。
 
 - CI：`.github/workflows/ci.yml` 在 `master` push / PR 时自动执行全部单测
-- 评估口径与逐题明细见 `docs/评估报告/评估报告.md`、`docs/评估报告/SQL编译修复前后对比报告.md`、`docs/问题记录/badcase_台账.md`
+- 评估口径与逐题明细见 **`docs/评估报告/README.md`**（29 份报告索引）；缺陷台账见 `docs/问题记录/badcase_台账.md`
 
 ## 技术栈
 
@@ -170,10 +172,11 @@ python -m eval report             # 聚合评估报告（覆盖核心指标）
 ## 项目结构
 
 ```
+cli.py          CLI 入口（交互式问答 / --build / --rebuild / --query）
 src/            业务源码（15 个包：app / core / pipelines / agents / prompts / config / data / tools 等）
 tests/          540 个用例 / 40 个测试文件（离线单测，零外部依赖）
-docs/           设计与评估文档（ARCHITECTURE / DEPLOYMENT / 评估报告 / ai-context）
-eval/           评估闭环（golden / SQL / citation / report / llm-judge）
+docs/           设计与评估文档（最权威：详细设计方案_上市公司智能问数助手系统.md；ARCHITECTURE / DEPLOYMENT / 评估报告 / 问题记录 / ai-context）
+eval/           评估闭环（golden / sql / citation / retrieval / challenge / consistency / llm-judge / report）
 scripts/        交互式问答入口与 CLI 启动器（interactive.py）
 qa-frontend/    React 19 + Vite 前端
 notebooks/      数据分析 Notebook（PDF 解析等）
