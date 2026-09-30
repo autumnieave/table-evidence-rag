@@ -13,7 +13,7 @@ RAG 金融研报智能问数系统：基于检索增强生成（RAG）的上市�
 | `src/config/` | 全局配置：`RAGConfig`（模型/路径/检索/引用校验参数，唯一配置源，含组件工厂与 `get_config()` 单例）；`EmbeddingClientAdapter` 已并入本模块（原兼容层 `langchain_config.py` 已删除） |
 | `src/prompts/` | 唯一 Prompt 目录：`rag.py`（RAG 问答，手写/LCEL 同源）、`pipeline.py`（字段提取/摘要/图片检测）、`agent.py`（Agent system prompt）、`financial.py`（SQL 生成）/ `multi_agent.py`（supervisor-workers）、`fallback.py`（兜底话术）、`examples/`（few-shot 示例库）、`registry.json`（版本注册表，**唯一事实源**）；新增 Prompt 一律放此，修改后同步 registry 版本 |
 | `src/core/` | 链路收敛接口：`interfaces.py`（`IRetriever/IReranker/IGenerator` 三协议）、`retrievers.py`（`HandwrittenRetriever` 自研基线=代码默认 / `HybridRetriever` 混合检索（`HYBRID_ENABLED` **默认 true**，即**当前默认使用**）/ `LangChainRetriever` 对照实验）、`rerankers.py` + `generators.py`（适配层） |
-| `eval/` | 评估闭环：`golden.py`（golden set 版本化，`database/golden/`，本地资产不入库）、`runner.py`（`python -m eval` 统一入口：golden / sql / citation / report / **llm-judge / challenge / consistency**）、`metrics.py`（报告聚合）、`answer_keys.py`（答案先验三态登记）、`llm_judge.py`（LLM-as-judge）、`consistency.py`（同题一致率）、`retrieval_metrics.py`（Recall@K / MRR）、`challenge.py`（对抗挑战集 v2） |
+| `eval/` | 评估闭环：`golden.py`（golden set 版本化，`database/golden/`，本地资产不入库）、`runner.py`（`python -m eval` 统一入口：golden / sql / citation / report / **llm-judge / challenge / consistency**）、`metrics.py`（报告聚合）、`answer_keys.py`（答案先验三态登记）、`llm_judge.py`（LLM-as-judge）、`consistency.py`（同题一致率）、`retrieval_metrics.py`（Hit Rate@K / MRR）、`challenge.py`（对抗挑战集 v2） |
 | `src/data/` | 研报 Markdown 加载、Excel 元数据匹配、文本分块与 HTML/Markdown 表格抽取 |
 | `src/embeddings/` | `EmbeddingClient`：通过 DashScope HTTP API 生成向量（text-embedding-v2，1536 维） |
 | `src/vectorstore/` | `QdrantClientWrapper`：Qdrant 集合读写、检索、清空封装 |
@@ -35,7 +35,7 @@ RAG 金融研报智能问数系统：基于检索增强生成（RAG）的上市�
 | `eval/answer_keys.py` | 答案先验登记（`has_data` / `no_data` / `unknown`）+ 只读复算，供 judge 判「应有数据却拒答」（B-36） |
 | `eval/llm_judge.py` | LLM-as-judge 评测（`python -m eval llm-judge`，支持 `--answer-key` / `--no-prior` / `--rejudge`） |
 | `eval/consistency.py` | 同题多次生成一致率（结构指纹 / 数值 IoU / 引用 Jaccard） |
-| `eval/retrieval_metrics.py` | 检索质量指标 Recall@K / Precision@K / MRR（B-24A） |
+| `eval/retrieval_metrics.py` | 检索质量指标 Hit Rate@K / Precision@K / MRR（B-24A） |
 | `eval/challenge.py` | 对抗挑战集 v2（18 条 / 5 类，`python -m eval challenge --run` / `--rejudge`） |
 | `src/prompts/registry.json` | Prompt 版本注册表（唯一事实源；防漂移单测 `tests/test_prompt_registry.py`） |
 | `src/prompts/fallback.py` | 兜底话术模板（refuse / suggest / human 三层，B-18） |
