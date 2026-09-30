@@ -183,21 +183,28 @@ database/       SQL 建表脚本（schema.sql，仅结构不含数据）
 
 ## 相关文档
 
-**快速了解**：`docs/评估报告/评估报告.md`（核心指标汇总）、`docs/ARCHITECTURE.md`（架构与现状）。
+**快速了解**：`docs/ARCHITECTURE.md`（架构与现状）→ `docs/详细设计方案_上市公司智能问数助手系统.md`（完整设计：链路 / 数据工程 / 评测 / 缺陷闭环 / 部署）→ `docs/评估报告/评估报告.md`（核心指标汇总）。
 
 | 文档 | 内容 |
 | --- | --- |
-| `docs/ARCHITECTURE.md` | 目标框架 vs 现状差距清单 |
+| `docs/ARCHITECTURE.md` | 架构与现状差距清单 |
+| `docs/详细设计方案_上市公司智能问数助手系统.md` | 完整设计方案（本仓库最权威的设计文档） |
 | `docs/DEPLOYMENT.md` | 部署说明（本地 / 全栈 / 常见问题） |
-| `docs/评估报告/评估报告.md` | 聚合评估报告（golden / SQL / 引用核验） |
-| `docs/评估报告/LangGraph对照.md` | LangGraph 对照版 Agent 验证 |
-| `docs/评估报告/MultiAgent对照.md` | supervisor-workers 多 Agent 协作 |
-| `docs/评估报告/SQL编译修复前后对比报告.md` | SQL 质量修复前后对比与口径 |
-| `docs/评估报告/RAG引用核验报告.md` | L1 引用核验明细 |
-| `docs/评估报告/overlap对比实验.md` | 分块参数 overlap 对比（100 最优） |
-| `docs/评估报告/检索对比实验.md` | 检索层对比：纯向量 vs 混合检索（引用命中） |
-| `docs/问题记录/badcase_台账.md` | SQL badcase 台账与修复闭环 |
-| `docs/问题记录/9题端到端人工抽检记录.md` | 端到端人工抽检记录 |
+| `docs/评估报告/README.md` | **评估报告索引**（29 份，每份一句话 + 任务编号） |
+| `docs/评估报告/评估报告.md` | 聚合评估报告（`python -m eval report` 生成） |
+| `docs/问题记录/badcase_台账.md` | 缺陷台账与修复闭环（评测结论回流处） |
+| `AGENTS.md` | 工程约定与常用命令（给协作者 / AI 工具） |
+
+主题代表报告（按评测五层；全量见 `docs/评估报告/README.md`）：
+- **L1 引用核验**：`L1引用核验回归_agg_topk.md`、`端到端复验快照_2026-09.md`
+- **L2 SQL 编译**：`80题全量SQL回归_2026-09-10.md`（口径源）、`SQL三层防线消融.md`
+- **L3 答案质量**：`答案质量_L3_20260930.md`（judge 未校准，只报进度）
+- **L4 对抗挑战集**：`对抗挑战集v2_阶段B真实执行.md`、`对抗挑战集v2_人工复核工作单.md`
+- **L5 检索排序质量**：`retrieval标注_20260927_人工终稿.md`、`retrieval线上口径归因_20260930.md`、`检索对比实验.md`
+
+其他：编排 `Agent后端同口径对照_原生链路.md` / `MultiAgent对照.md`；性能 `性能优化_并行缓存.md`；分块 `overlap对比实验.md`
+
+（以上报告均在 `docs/评估报告/` 下）
 
 ## License
 
