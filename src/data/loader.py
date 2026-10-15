@@ -1,9 +1,32 @@
 import re
 import pandas as pd
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from data.metadata import load_excel_metadata_by_title, get_best_metadata_for_title
+
+
+def load_stock_vocabulary(excel_metadata_path: str) -> Set[str]:
+    """读取个股研报 Excel 元数据，返回全部股票简称集合（**闭词表**，供实体归一使用）。
+
+    用途：把 LLM/用户给出的简称（如「三金」）按闭词表归一到语料里的规范简称（「桂林三金」）——
+    对**闭词表**做子串匹配比对任意字符串做子串匹配安全得多（不会把「生物」「药业」这类通用词误伤）。
+    只读 Excel，不加载研报正文；Excel 不存在时返回空集合（调用方走降级路径）。
+
+    Args:
+        excel_metadata_path: 个股研报元数据 Excel 路径
+
+    Returns:
+        规范股票简称集合（去空白、去重）
+    """
+    metadata_dict = load_excel_metadata_by_title(excel_metadata_path)
+    names: Set[str] = set()
+    for records in metadata_dict.values():
+        for item in (records or []):
+            name = str((item or {}).get("stockName") or "").strip()
+            if name:
+                names.add(name)
+    return names
 
 
 def load_markdown_documents(directory_path: str, excel_metadata_path: Optional[str] = None) -> List[Dict[str, Any]]:

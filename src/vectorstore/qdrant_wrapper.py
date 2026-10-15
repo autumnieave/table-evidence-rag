@@ -189,4 +189,38 @@ class QdrantClientWrapper:
         logger.info("scroll_all 拉取全部点：%d 个", len(results))
         return results
 
+    def distinct_stock_names(self, batch_size: int = 2000) -> set:
+        """滚动读取集合内**去重后的非空股票简称**（闭词表，供实体闸门归一使用）。
+
+        只取 ``stockName`` 字段（不拉正文与向量），比 :meth:`scroll_all` 轻得多；
+        行业研报等无该字段的点会被跳过，因此返回的是**个股语料词表**。
+
+        Args:
+            batch_size: 每次滚动拉取的点数
+
+        Returns:
+            非空股票简称集合
+        """
+        names: set = set()
+        offset: Optional[Any] = None
+        while True:
+            resp = self.client.scroll(
+                collection_name=self.config.QDRANT_COLLECTION_NAME,
+                limit=batch_size,
+                offset=offset,
+                with_payload=["stockName"],
+                with_vectors=False,
+            )
+            points = resp.points if hasattr(resp, "points") else resp[0]
+            next_offset = resp.next_page_offset if hasattr(resp, "next_page_offset") else resp[1]
+            for point in points:
+                name = str((point.payload or {}).get("stockName") or "").strip()
+                if name:
+                    names.add(name)
+            if next_offset is None or not points:
+                break
+            offset = next_offset
+        logger.info("distinct_stock_names 拉取完成：%d 家公司", len(names))
+        return names
+
 # ==================== 元数据过滤模块 ====================

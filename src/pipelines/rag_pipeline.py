@@ -29,7 +29,7 @@ from prompts.pipeline import (
 from pipelines.citation_validator import CitationValidator
 from agents.planner import AgentPlanner
 from chains.rag_chain import LangChainRAGChain
-from filters import QueryFilters
+from filters import QueryFilters, apply_entity_gate
 from memory import ClarifyStatus, ConversationState, MemoryStore, create_memory_store
 from prompts.fallback import build_suggest_missing, log_fallback as _log_fallback
 from tools.claim_evidence_locator import attach_full_text, locate_claims_per_reference
@@ -48,6 +48,7 @@ from llm import LLMGenerator
 from data import (
     load_markdown_documents,
     load_industry_documents,
+    load_stock_vocabulary,
     load_excel_metadata_by_title,
     get_best_metadata_for_title,
     split_documents,
@@ -318,6 +319,33 @@ class RAGPipeline:
             )
             logger.info("LangChain 向量存储已初始化 (collection=%s)", self.config.QDRANT_COLLECTION_NAME)
         return self._vectorstore
+
+    def _get_stock_vocabulary(self) -> set:
+        """语料规范股票简称闭词表（L5-B 实体闸门归一用；懒加载 + 单例缓存）。
+
+        来源优先级：
+        1. **向量库内实际语料**（``QdrantClientWrapper.distinct_stock_names``）——与检索集合自洽；
+           实测 ``config.EXCEL_METADATA_PATH`` 默认指向 10 家的测试数据，而线上集合是 30 家正式语料，
+           直接用配置路径会把「三金 → 桂林三金」这类归一做空；
+        2. 向量库不可用/无个股语料时，降级到 ``config.EXCEL_METADATA_PATH``；
+        3. 都失败则返回空集合，闸门退化为「前缀匹配」而非报错。
+        """
+        cached = getattr(self, "_stock_vocabulary", None)
+        if cached is not None:
+            return cached
+        vocab: set = set()
+        if getattr(self.config, "ENTITY_GATE_VOCAB_ENABLED", False):
+            try:
+                vocab = set(self.qdrant_client.distinct_stock_names())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("从向量库读取股票简称闭词表失败，降级到元数据 Excel: %s", exc)
+            if not vocab:
+                try:
+                    vocab = load_stock_vocabulary(self.config.EXCEL_METADATA_PATH)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("加载股票简称闭词表失败（闸门退化为前缀匹配）: %s", exc)
+        self._stock_vocabulary = vocab
+        return vocab
 
     def _get_retriever(self) -> IRetriever:
         """返回当前检索器（IRetriever 接口）。
@@ -1152,6 +1180,18 @@ class RAGPipeline:
 
         # 向量检索（软过滤：不硬过滤，召回后用元数据匹配得分重排，与 query() 保持一致） 
         search_results = self._get_retriever().retrieve(user_input, query_filter=None)
+        # 实体硬闸门（L5-B，默认关）：与 query() 同一套逻辑（保持候选顺序；命中不足 min_keep 时自动跳过）
+        if getattr(self.config, "ENTITY_GATE_ENABLED", False):
+            search_results, gate_meta = apply_entity_gate(
+                search_results,
+                stock_name=self.conversation_state.filters.stock_name,
+                stock_code=self.conversation_state.filters.stock_code,
+                min_keep=self.config.ENTITY_GATE_MIN_KEEP,
+                keep_unknown_entity=self.config.ENTITY_GATE_KEEP_UNKNOWN,
+                known_names=self._get_stock_vocabulary(),
+            )
+            if verbose:
+                print(f"[实体闸门] {gate_meta['reason']}")
         # 软约束：融合元数据匹配得分，重新排序
         alpha = 0.8
         for res in search_results:
@@ -1270,6 +1310,19 @@ class RAGPipeline:
             else:
                 label = ""
             print(f"\n[检索阶段] 召回 {len(search_results)} 个相关片段{label}")
+        # 4a. 实体硬闸门（L5-B，默认关）：软约束只置换同一集合、无法移除候选（精排吃全部候选且对输入顺序不敏感），
+        #     只有硬过滤才能改变最终 top-10；命中不足 min_keep 时自动跳过（多主体/行业题保护）
+        if getattr(self.config, "ENTITY_GATE_ENABLED", False):
+            search_results, gate_meta = apply_entity_gate(
+                search_results,
+                stock_name=filters.stock_name,
+                stock_code=filters.stock_code,
+                min_keep=self.config.ENTITY_GATE_MIN_KEEP,
+                keep_unknown_entity=self.config.ENTITY_GATE_KEEP_UNKNOWN,
+                known_names=self._get_stock_vocabulary(),
+            )
+            if verbose:
+                print(f"[实体闸门] {gate_meta['reason']}")
         # 4. 软约束：融合元数据匹配得分，重新排序
         alpha = 0.8  # 向量相似度权重，匹配度权重为 1-alpha
         for res in search_results:

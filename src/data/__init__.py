@@ -1,4 +1,4 @@
-from .loader import load_markdown_documents, load_industry_documents
+from .loader import load_markdown_documents, load_industry_documents, load_stock_vocabulary
 from .metadata import load_excel_metadata_by_title, get_best_metadata_for_title
 
 try:

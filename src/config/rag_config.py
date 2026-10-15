@@ -137,6 +137,21 @@ class RAGConfig:
     """Rerank 请求条数倍率：实际请求 RERANK_TOP_N×OVERSAMPLE，再经每文件上限收敛回 RERANK_TOP_N"""
     RERANK_MAX_PER_FILE: int = field(default_factory=lambda: int(_env("RERANK_MAX_PER_FILE", "2")))
     """精排后每文件最多保留片段数（0=不限制；缓解精排把上下文压缩到少数文件导致的引用覆盖下降）"""
+    ENTITY_GATE_ENABLED: bool = field(default_factory=lambda: _env("ENTITY_GATE_ENABLED", "false").lower() == "true")
+    """实体硬闸门（L5-B）：用查询解析出的公司实体对候选做硬过滤。**默认关**（软约束原样保留，便于 A/B）
+    背景：软约束只是置换同一集合（精排吃全部 RETRIEVAL_K 条且对输入顺序不敏感），无法移除候选 ⇒ 只有硬过滤能改变最终 top-10"""
+    ENTITY_GATE_MIN_KEEP: int = field(default_factory=lambda: int(_env("ENTITY_GATE_MIN_KEEP", "0")))
+    """实体硬闸门安全阈值（可选，默认 0 = 不启用）：**实体命中数**低于该值时不过滤。
+    实测（2026-10-16，27 题）该闸门不划算——min_keep=3 有 11 题跳过过滤、他公司占比 0.1333，
+    而 min_keep=0 他公司占比 0.0 且本主体命中率相同；它也不能保护多主体对比题。
+    上下文安全由 ENTITY_GATE_KEEP_UNKNOWN=true 兜底（实测空上下文 0/27）"""
+    ENTITY_GATE_KEEP_UNKNOWN: bool = field(default_factory=lambda: _env("ENTITY_GATE_KEEP_UNKNOWN", "true").lower() == "true")
+    """是否保留**无实体标注**的候选（行业研报等）。**默认 true 且必须为 true**：27 条点名公司题里 7 条的公司不在语料内，
+    关掉会把 7/27 题的上下文清空（2026-10-16 实测；闭词表修好后 B2009 不再被清空，故由 8 降为 7）"""
+    ENTITY_GATE_VOCAB_ENABLED: bool = field(default_factory=lambda: _env("ENTITY_GATE_VOCAB_ENABLED", "true").lower() == "true")
+    """是否启用闭词表简称归一（`三金` → `桂林三金`）；词表优先取**向量库内实际语料**的去重 stockName（与检索集合自洽），
+    取不到时降级到 config.EXCEL_METADATA_PATH（个股研报元数据）"""
+
     TABLE_AGG_TOPK: int = field(default_factory=lambda: int(_env("TABLE_AGG_TOPK", "20")))
     """表聚合作用范围：仅对排序后前 TOPK 条候选中的表格行拉取父表（0=不限制；默认 20 与 Rerank oversample 对齐，避免低相关表格行拖慢首查）"""
 
