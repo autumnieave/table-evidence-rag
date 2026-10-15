@@ -125,6 +125,8 @@ class RAGConfig:
     """文本分块大小 (字符数)"""
     CHUNK_OVERLAP: int = field(default_factory=lambda: int(_env("CHUNK_OVERLAP", "100")))
     """分块重叠大小 (字符数)"""
+    CHUNK_MIN_CHARS: int = field(default_factory=lambda: int(_env("CHUNK_MIN_CHARS", "200")))
+    """分块最小长度 (字符数)：过短的相邻文本块会被合并，避免单字碎片入库；0 = 关闭（旧行为）。改这里必须同步 src/data/splitter.py 的 CHUNK_MIN_CHARS 并重建索引"""
 
     # ── 检索配置 ─────────────────────────────────────────────────────
     RETRIEVAL_K: int = field(default_factory=lambda: int(_env("RETRIEVAL_K", "50")))

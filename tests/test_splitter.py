@@ -1,7 +1,9 @@
 """data.splitter 分块与表格抽取单元测试（纯逻辑）。"""
 
 from data.splitter import (
+    CHUNK_MIN_CHARS,
     extract_tables_and_text,
+    merge_short_chunks,
     parse_html_table,
     parse_markdown_table,
     recursive_split_text,
@@ -59,3 +61,74 @@ def test_split_documents_keeps_metadata():
     chunks = split_documents(docs, chunk_size=128, chunk_overlap=16)
     assert chunks
     assert all(c.get("metadata", {}).get("stockName") == "贵州茅台" for c in chunks)
+
+# ------------------------------------------------- L5-A 碎片合并（最小块 ≥200 字）
+
+
+def test_merge_short_chunks_merges_fragments():
+    frags = ["状", "行业: A股价(2025/3/18); 医药生物: 58.26", "第三块内容" * 50]
+    merged = merge_short_chunks(frags, 200)
+    assert len(merged) == 1
+    assert len(merged[0]) >= 200
+    # 内容不丢、顺序不变
+    pos = -1
+    for frag in frags:
+        idx = merged[0].find(frag)
+        assert idx > pos
+        pos = idx
+
+
+def test_merge_short_chunks_tail_absorbed_by_previous():
+    merged = merge_short_chunks(["长块" * 120, "尾碎片"], 200)
+    assert len(merged) == 1
+    assert merged[0].endswith("尾碎片")
+
+
+def test_merge_short_chunks_disabled_when_min_zero():
+    frags = ["状", "   ", "短句"]
+    assert merge_short_chunks(frags, 0) == ["状", "短句"]
+
+
+def test_merge_short_chunks_skips_blank_and_handles_empty():
+    assert merge_short_chunks([], 200) == []
+    assert merge_short_chunks(["   ", ""], 200) == []
+
+
+def test_merge_short_chunks_single_short_chunk_kept():
+    # 全篇不足 min_chars 时不能凭空造内容，原样保留
+    merged = merge_short_chunks(["只有很短的一句"], 200)
+    assert merged == ["只有很短的一句"]
+
+
+def test_split_documents_merges_short_text_chunks():
+    # chunk_size 调小，确保 langchain 先切出多个 <200 的小块，再验证合并
+    docs = [{"content": "\n\n".join("短段落%d" % i for i in range(60)), "metadata": {"filename": "a.md"}}]
+    chunks = split_documents(docs, chunk_size=60, chunk_overlap=0, min_chars=200)
+    text_chunks = [c for c in chunks if not c["metadata"]["is_table_row"]]
+    assert text_chunks
+    assert all(len(c["content"]) >= 200 for c in text_chunks)
+    assert sum(len(c["content"]) for c in text_chunks) >= 300
+
+
+def test_split_documents_min_chars_zero_keeps_old_behavior():
+    docs = [{"content": "\n\n".join("短段落%d" % i for i in range(60)), "metadata": {"filename": "a.md"}}]
+    off = split_documents(docs, chunk_size=60, chunk_overlap=0, min_chars=0)
+    on = split_documents(docs, chunk_size=60, chunk_overlap=0, min_chars=200)
+    assert len(off) > len(on)
+    assert any(len(c["content"]) < 200 for c in off)
+    assert all(len(c["content"]) >= 200 for c in on)
+
+
+def test_split_documents_does_not_merge_table_rows():
+    md = "| 指标 | 数值 |\n| --- | --- |\n| 营收 | 100 |\n| 净利 | 20 |\n\n正文" + "内容" * 200
+    docs = [{"content": md, "metadata": {"filename": "b.md"}}]
+    chunks = split_documents(docs, chunk_size=200, chunk_overlap=0, min_chars=200)
+    rows = [c for c in chunks if c["metadata"]["is_table_row"]]
+    texts = [c for c in chunks if not c["metadata"]["is_table_row"]]
+    assert len(rows) >= 2, "表格行应保持一行一块，不参与合并"
+    assert all(c["metadata"]["parent_id"] == "b.md_tables" for c in rows)
+    assert texts and all(len(c["content"]) >= 200 for c in texts)
+
+
+def test_chunk_min_chars_default_constant():
+    assert CHUNK_MIN_CHARS == 200

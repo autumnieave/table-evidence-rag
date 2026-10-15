@@ -685,7 +685,8 @@ class RAGPipeline:
         chunks = split_documents(
             all_docs,
             chunk_size=self.config.CHUNK_SIZE,
-            chunk_overlap=self.config.CHUNK_OVERLAP
+            chunk_overlap=self.config.CHUNK_OVERLAP,
+            min_chars=self.config.CHUNK_MIN_CHARS
         )
         # ----- 为非表格行生成摘要 -----
         non_table_texts = []
@@ -743,7 +744,8 @@ class RAGPipeline:
         chunks = split_documents(
             new_doc_contents,
             chunk_size=self.config.CHUNK_SIZE,
-            chunk_overlap=self.config.CHUNK_OVERLAP
+            chunk_overlap=self.config.CHUNK_OVERLAP,
+            min_chars=self.config.CHUNK_MIN_CHARS
         )
 
         if not chunks:

@@ -4,6 +4,7 @@ from .metadata import load_excel_metadata_by_title, get_best_metadata_for_title
 try:
     from .splitter import (
         split_documents,
+        merge_short_chunks,
         recursive_split_text,
         extract_tables_and_text,
         parse_html_table,

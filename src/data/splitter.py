@@ -7,6 +7,12 @@ try:
 except ImportError:
     RecursiveCharacterTextSplitter = None
 
+#: 分块最小长度（字符）：过短的相邻文本块会被合并，避免单字/碎片块入库。
+#: 与 config.rag_config 的 CHUNK_MIN_CHARS 默认值保持一致；改这里必须同步改那里（同 overlap 约定）。
+CHUNK_MIN_CHARS: int = 200
+#: 合并相邻文本块时补的分隔符（切分时原分隔符已被消费，这里用换行做通用再拼接）
+CHUNK_JOIN_SEPARATOR: str = "\n"
+
 
 def extract_tables_and_text(content: str) -> List:
     html_table_pattern = re.compile(r'<table>.*?</table>', re.DOTALL)
@@ -147,7 +153,54 @@ def recursive_split_text(text: str, chunk_size: int, chunk_overlap: int, separat
     return chunks
 
 
-def split_documents(documents: List[Dict[str, Any]], chunk_size: int = 1024, chunk_overlap: int = 100) -> List[Dict[str, Any]]:
+def merge_short_chunks(chunks: List[str], min_chars: int = CHUNK_MIN_CHARS) -> List[str]:
+    """把过短的相邻文本块合并，避免入库出现「状」这类单字/碎片块（L5-A）。
+
+    规则与边界：
+
+    - ``min_chars <= 0`` 时只做去空、不合并（等价旧行为，便于对照实验）；
+    - 顺序不变、内容不丢：合并只在相邻块之间补一个 ``CHUNK_JOIN_SEPARATOR``；
+    - 逐块累积到 ``>= min_chars`` 才落一块；**末块不足 min_chars 时并入前一块**，
+      避免尾部留一个碎片；
+    - 仅用于**文本块**：表格行（``is_table_row=True``）不参与合并——父表回拉
+      （``parent_id`` / ``TABLE_AGG_TOPK``）依赖「一行一块」的结构。
+
+    Args:
+        chunks: 切分后的文本块列表（按原文顺序）
+        min_chars: 合并阈值（字符数）
+
+    Returns:
+        合并后的文本块列表
+    """
+    cleaned = [c for c in (chunks or []) if c and c.strip()]
+    if min_chars <= 0 or not cleaned:
+        return cleaned
+
+    merged: List[str] = []
+    buffer = ""
+    for chunk in cleaned:
+        buffer = buffer + CHUNK_JOIN_SEPARATOR + chunk if buffer else chunk
+        if len(buffer) >= min_chars:
+            merged.append(buffer)
+            buffer = ""
+    if buffer:
+        if merged:
+            merged[-1] = merged[-1] + CHUNK_JOIN_SEPARATOR + buffer
+        else:
+            merged.append(buffer)
+    return merged
+
+
+def split_documents(documents: List[Dict[str, Any]], chunk_size: int = 1024, chunk_overlap: int = 100, min_chars: int = CHUNK_MIN_CHARS) -> List[Dict[str, Any]]:
+    """把文档切分为「文本块 + 表格行」两类 chunk。
+
+    Args:
+        documents: 文档列表（每项含 content / metadata，metadata 需带 filename）
+        chunk_size: 文本块大小（字符）
+        chunk_overlap: 文本块重叠（字符）
+        min_chars: 文本块最小长度，过短的相邻块会被合并（``0`` = 关闭，保持旧行为）；
+            表格行不受影响
+    """
     if RecursiveCharacterTextSplitter is None:
         raise ImportError("langchain_text_splitters is required for split_documents")
     text_splitter = RecursiveCharacterTextSplitter(
@@ -166,6 +219,8 @@ def split_documents(documents: List[Dict[str, Any]], chunk_size: int = 1024, chu
         processed_content, table_rows = extract_tables_and_text(content)
         if processed_content.strip():
             text_chunks = text_splitter.split_text(processed_content)
+            # L5-A：先合并碎片块再入库（表格行在下方独立处理，不参与合并）
+            text_chunks = merge_short_chunks(text_chunks, min_chars)
         else:
             text_chunks = []
         parent_id = None

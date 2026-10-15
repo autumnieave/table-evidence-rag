@@ -10,10 +10,12 @@
 - 复用 data/loader、data/splitter、embeddings、vectorstore，与 build_index 同链路；
 - 为控制成本/耗时，跳过逐块 LLM 摘要（qwen-turbo）；摘要缺失时引用展示回退正文前 200 字（pipelines 已兼容）；
 - 向量化并发执行（--workers，默认 4；batch=25），实测 3 并发无限流限制；
-- 支持 --force 清空重建；非 force 且集合已有数据时直接跳过（防重复嵌入）。
+- 支持 --force 清空重建；非 force 且集合已有数据时直接跳过（防重复嵌入）；
+- 分块参数 --chunk-size / --chunk-overlap / --min-chars（L5-A 碎片合并：-1=取配置默认、0=关闭）。
 
 用法：
   python -m tools.data_scripts.rebuild_full_index [--collection research_reports_v3_full] [--workers 4] [--force]
+  python -m tools.data_scripts.rebuild_full_index --collection research_reports_v3_l5a --chunk-size 1024 --min-chars 200 --force
 """
 from __future__ import annotations
 
@@ -54,14 +56,16 @@ def build_config(collection: str) -> RAGConfig:
 
 
 def build_config_with_split(
-    collection: str, chunk_size: int = 0, chunk_overlap: int = -1
+    collection: str, chunk_size: int = 0, chunk_overlap: int = -1, min_chars: int = -1
 ) -> RAGConfig:
-    """构造指向正式数据语料的配置，并可选覆盖分块参数（0/-1 表示取配置默认）"""
+    """构造指向正式数据语料的配置，并可选覆盖分块参数（取配置默认：chunk_size=0 / overlap=-1 / min_chars=-1）"""
     cfg = build_config(collection)
     if chunk_size > 0:
         cfg.CHUNK_SIZE = chunk_size
     if chunk_overlap >= 0:
         cfg.CHUNK_OVERLAP = chunk_overlap
+    if min_chars >= 0:
+        cfg.CHUNK_MIN_CHARS = min_chars
     return cfg
 
 
@@ -73,14 +77,15 @@ def main(argv=None) -> int:
     parser.add_argument("--force", action="store_true", help="清空目标集合后重建")
     parser.add_argument("--chunk-size", type=int, default=0, help="分块大小（0=取配置默认 1024）")
     parser.add_argument("--chunk-overlap", type=int, default=-1, help="分块重叠字符数（-1=取配置默认；overlap 对比实验用）")
+    parser.add_argument("--min-chars", type=int, default=-1, help="文本块最小长度（-1=取配置默认 200；0=关闭碎片合并，L5-A）")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=[logging.StreamHandler(sys.stdout)])
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-    config = build_config_with_split(args.collection, args.chunk_size, args.chunk_overlap)
-    logger.info("分块参数：chunk_size=%d, chunk_overlap=%d", config.CHUNK_SIZE, config.CHUNK_OVERLAP)
+    config = build_config_with_split(args.collection, args.chunk_size, args.chunk_overlap, args.min_chars)
+    logger.info("分块参数：chunk_size=%d, chunk_overlap=%d, min_chars=%d", config.CHUNK_SIZE, config.CHUNK_OVERLAP, config.CHUNK_MIN_CHARS)
     qdrant = QdrantClientWrapper(config)
 
     if qdrant.count() > 0 and not args.force:
@@ -99,7 +104,7 @@ def main(argv=None) -> int:
         logger.error("未加载到任何文档，退出")
         return 1
 
-    chunks = split_documents(all_docs, chunk_size=config.CHUNK_SIZE, chunk_overlap=config.CHUNK_OVERLAP)
+    chunks = split_documents(all_docs, chunk_size=config.CHUNK_SIZE, chunk_overlap=config.CHUNK_OVERLAP, min_chars=config.CHUNK_MIN_CHARS)
     logger.info("分块完成：%d 块（耗时 %.1fs）", len(chunks), time.time() - t0)
     if not chunks:
         logger.error("分块结果为空，退出")

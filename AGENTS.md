@@ -78,7 +78,7 @@ RAG 金融研报智能问数系统：基于检索增强生成（RAG）的上市�
 
 - **改 `src/pipelines/` 需同步检查 `scripts/interactive.py` 与 `src/app/api.py`**：它们直接调用 `RAGPipeline` 的方法与属性（`query`、`agent_query`、`build_index`、`agent_mode_enabled` 等），改名/删参会导致入口崩溃。
 - **改 `src/config/rag_config.py` 的 `get_chat_model()`**：`qwen3.5-plus` 是推理模型，必须保留 `extra_body={"enable_thinking": False}`，否则思考过程会耗尽 `max_tokens` 导致空回答。
-- **分块口径已统一为 overlap=100**（2026-08-24 对比实验确认最优：`docs/评估报告/overlap对比实验.md`）：`src/data/splitter.py` 默认与 `src/config/rag_config.py` 的 `CHUNK_OVERLAP` 一致（100），pipeline 显式传 config 值。改分块参数必须同步两处默认值并重建索引，否则新旧语料混用。
+- **分块口径已统一为 overlap=100**（2026-08-24 对比实验确认最优：`docs/评估报告/overlap对比实验.md`）：`src/data/splitter.py` 默认与 `src/config/rag_config.py` 的 `CHUNK_OVERLAP` 一致（100），pipeline 显式传 config 值。改分块参数必须同步两处默认值并重建索引，否则新旧语料混用。**分块最小长度 `CHUNK_MIN_CHARS` 默认 200**（2026-10-16，L5-A）：过短的相邻文本块会被 `splitter.merge_short_chunks` 合并，避免「状」这类单字碎片入库；`splitter.py` 与 `rag_config.py` 两处默认值同样必须同步、并重建索引；表格行（`is_table_row=True`）不参与合并（父表回拉依赖一行一块）。
 - **改 Embedding 调用**：DashScope v2 的 HTTP API payload 必须是 `{"input": {"texts": [...]}}`（`input` 是对象不是数组），参数用 `text_type`；不要改回 `dashscope.TextEmbedding.call`（SDK 版本不兼容）。
 - **改 `src/chains/rag_chain.py`**：retriever 必须只接收 question 字符串（通过 `RunnablePassthrough.assign` 提取），不能把整个输入 dict 传给 retriever，否则 `embed_query` 会收到 dict 报错。
 - **改 `src/pipelines/rag_pipeline.py` 的 `get_vectorstore()`**：必须走 `get_vector_store_direct`（带 `validate_collection_config=False`），不能改回 `from_existing_collection`（会触发 `embed_documents(["dummy_text"])` 维度验证报错）。
