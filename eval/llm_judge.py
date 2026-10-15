@@ -29,6 +29,7 @@ B-36 增补：支持 `--answer-key` 加载**答案先验登记表**（`eval/answ
 import argparse
 import csv
 import json
+import os
 import re
 import sys
 import time
@@ -52,11 +53,35 @@ DEFAULT_MODEL = "qwen-flash"
 DEFAULT_OUT_DIR = _REPO_ROOT / "训练结果数据" / "llm_judge_20260910"
 CHALLENGE_REVIEW = _REPO_ROOT / "训练结果数据" / "challenge_v2_review.json"
 
-MAX_ANSWER_CHARS = 3000
-MAX_REF_CHARS = 700
-MAX_SQL_CHARS = 2500
-MAX_SQL_PREVIEW_CHARS = 2000
 MAX_SQL_ROWS = 30
+
+
+def _env_cap(name: str, default: int) -> int:
+    """读取字符截断上限的环境变量覆盖（>0 为上限，0 表示不按字符截断）。
+
+    用途：人工复核工作单给的是引用片段 / SQL 结果预览**原文**，judge 若另行截断，
+    两侧材料就不对齐（人看到的是 judge 的超集），一致率会被"材料差"而非"judge 质量"污染。
+    置 0 即让 judge 与工作单同口径；非法值回落默认，保证默认口径下旧基线可复现。
+    """
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
+
+def _cap(text: str, limit: int) -> str:
+    """按 limit 截断字符数（limit<=0 表示不截断）。"""
+    return text if limit <= 0 else text[:limit]
+
+
+MAX_ANSWER_CHARS = _env_cap("JUDGE_MAX_ANSWER_CHARS", 3000)
+MAX_REF_CHARS = _env_cap("JUDGE_MAX_REF_CHARS", 700)
+MAX_SQL_CHARS = _env_cap("JUDGE_MAX_SQL_CHARS", 2500)
+MAX_SQL_PREVIEW_CHARS = _env_cap("JUDGE_MAX_SQL_PREVIEW_CHARS", 2000)
 
 # 拒答/澄清话术与关键数值抽取已下沉到 `eval/answer_keys.py`（judge / consistency / 先验校验
 # 共用同一份，避免多份词表漂移）；本模块在文件头 import 后再对外暴露，旧导入路径保持可用。
@@ -142,14 +167,14 @@ def build_judge_prompt(
     ref_blocks: List[str] = []
     for i, ref in enumerate(list(references or [])[:max_refs], 1):
         path = str(ref.get("paper_path") or "")
-        text = str(ref.get("text") or "")[:MAX_REF_CHARS]
+        text = _cap(str(ref.get("text") or ""), MAX_REF_CHARS)
         ref_blocks.append(f"[{i}] 文件：{path}\n片段：{text}")
     refs_text = "\n\n".join(ref_blocks) if ref_blocks else "（本题无研报引用）"
 
     if sql_text.strip():
-        sql_body = f"SQL：\n{sql_text[:MAX_SQL_CHARS]}"
+        sql_body = f"SQL：\n{_cap(sql_text, MAX_SQL_CHARS)}"
         if sql_preview.strip():
-            sql_body += f"\n\n查询结果（前 {MAX_SQL_ROWS} 行）：\n{sql_preview[:MAX_SQL_PREVIEW_CHARS]}"
+            sql_body += f"\n\n查询结果（前 {MAX_SQL_ROWS} 行）：\n{_cap(sql_preview, MAX_SQL_PREVIEW_CHARS)}"
         else:
             sql_body += "\n\n（查询结果预览未提供：仅依据引用片段判断数值可溯源性，证据不足时判 na）"
     else:
@@ -158,7 +183,7 @@ def build_judge_prompt(
     criterias = "\n".join(f"- {c['id']} {c['name']}：{c['desc']}" for c in CRITERIA)
     return JUDGE_PROMPT.format(
         question=(question or "").strip(),
-        answer=(answer or "")[:MAX_ANSWER_CHARS],
+        answer=_cap(answer or "", MAX_ANSWER_CHARS),
         references=refs_text,
         sql=sql_body,
         criterias=criterias,

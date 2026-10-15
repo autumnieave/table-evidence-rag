@@ -152,6 +152,7 @@ python -m eval report             # 聚合评估报告（覆盖核心指标）
 ```
 
 > 说明：`python -m eval` 依赖本地评估资产（golden 快照等，不入库），缺失时仅影响评估复现，不影响系统运行；单测不依赖任何外部服务与数据。
+> judge 材料截断上限支持环境变量覆盖（`JUDGE_MAX_REF_CHARS` / `JUDGE_MAX_ANSWER_CHARS` / `JUDGE_MAX_SQL_CHARS` / `JUDGE_MAX_SQL_PREVIEW_CHARS`，默认 700 / 3000 / 2500 / 2000；置 **0 = 不截断**，用于让人工复核与 judge 看到同一份材料）。
 
 - CI：`.github/workflows/ci.yml` 在 `master` push / PR 时自动执行全部单测
 - 评估口径与逐题明细见 **`docs/评估报告/README.md`**（29 份报告索引）；缺陷台账见 `docs/问题记录/badcase_台账.md`
