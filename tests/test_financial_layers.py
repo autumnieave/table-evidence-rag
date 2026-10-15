@@ -22,7 +22,7 @@ _TASKS = {
 
 def test_version_bumped_for_b33() -> None:
     """B-33 补齐金额列单位口径 + 禁止 10000 倍换算，版本随之 bump（v9 → v10）。"""
-    assert fin.FINANCIAL_PROMPT_VERSION == "2026-09-10-v10"
+    assert fin.FINANCIAL_PROMPT_VERSION == "2026-10-15-v11"
 
 
 def test_build_equals_public_constants() -> None:

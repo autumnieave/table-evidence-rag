@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple, Union
 
-FINANCIAL_PROMPT_VERSION = "2026-09-10-v10"  # B-33: 补齐金额列单位口径（万元/元速查表）+ 禁止 10000 倍换算；B-31: 指标标准化新增 unsupported_metrics（库外指标显式标注）
+FINANCIAL_PROMPT_VERSION = "2026-10-15-v11"  # B-37: 分析层计数一致性硬约束（合计类计数须等于结果行数、分组计数之和须等于总行数）+ 用户消息注入【结果行数】；B-33: 金额列单位口径；B-31: unsupported_metrics
 
 _UNIT_RULES = """### 单位口径速查（2026-09-10 按库内实测量级核定，B-33；**做比值/换算前必读**）
 - **万元（默认）**：`core_performance_indicators_sheet` 全部金额列（total_operating_revenue、net_profit_10k_yuan、net_profit_excl_non_recurring 等）；
@@ -266,6 +266,11 @@ _ANALYSIS_TASK = """
 - 若某公司确实不在查询结果中或字段为 null，如实写“未查到/缺”，**严禁**猜测补数或用别的公司数值顶替。
 - 解释存量科目（如未分配利润）历史成因时：只能把查询结果中该主体各 `report_year / report_period` 行内数值串成时间线，
   库内数据起点之前的情况写“库内无更早数据”，**严禁**用“可能/推测/同行业公司类似情况”编造具体年份与亏损故事。
+
+#### 计数一致性硬约束（新增，B-37）
+- 用户消息会给出【结果行数】（本次查询的公司行数）：凡输出“共 X 家/合计 X 项/总计 X 个”这类**合计类计数**，X 必须与【结果行数】完全一致，**严禁**凭印象写数量。
+- 做分组统计（如按区间/分类分组）时：**各组计数之和必须等于【结果行数】**；不确定时先逐行数【查询结果】再下结论。
+- 涉及“前十/后十/TOP N”等排名类表述时，只按实际取到的行数陈述，不得把排名数量与总行数混为一谈。
 
 """
 

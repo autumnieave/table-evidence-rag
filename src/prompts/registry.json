@@ -7,9 +7,9 @@
       "template_id": "prompt.package",
       "module": "__init__.py",
       "file": "prompts/__init__.py",
-      "version": "2026-09-10-v6",
-      "updated_at": "2026-09-10",
-      "changelog": "B-33：financial 新增金额列单位口径速查（库内默认万元，唯一例外 cash_flow_sheet.net_cash_flow 为元）+ 禁止金额列间 10000 倍换算，包级版本同步；B-31：指标标准化 unsupported_metrics + fallback refuse.metric_out_of_scope",
+      "version": "2026-10-15-v7",
+      "updated_at": "2026-10-15",
+      "changelog": "B-37（2026-10-15）：financial 分析层新增计数一致性硬约束（合计类计数=结果行数、分组计数之和=总行数）+ 用户消息注入【结果行数】，包级版本同步；B-33：financial 金额列单位口径速查 + 禁止金额列间 10000 倍换算；B-31：指标标准化 unsupported_metrics + fallback refuse.metric_out_of_scope",
       "eval_ref": ""
     },
     {
@@ -52,9 +52,9 @@
       "template_id": "prompt.financial",
       "module": "financial",
       "file": "prompts/financial.py",
-      "version": "2026-09-10-v10",
-      "updated_at": "2026-09-10",
-      "changelog": "B-33（2026-09-10）：补齐金额列单位口径（万元/元速查表 _UNIT_RULES 注入 metric_standardization / sql_gen 两层）；修正 income.net_profit 被错标为「元」（实为万元）与 chart_gen 查询结果单位说明；硬性禁令新增「金额列间禁止 ×/÷10000」。事故：B2053 比值区间筛选因多乘 10000 命中 0 家（实际 14 家）",
+      "version": "2026-10-15-v11",
+      "updated_at": "2026-10-15",
+      "changelog": "B-37（2026-10-15）：analysis 层新增计数一致性硬约束（合计类计数必须等于结果行数、分组计数之和必须等于总行数、排名类只按实际行数陈述）；用户消息注入【结果行数】并在分析出口加计数自洽性核验（不一致则纠错重试一次）。事故：B2053 n=5 中 1 次「14 行写 13 家」。B-33（2026-09-10）：补齐金额列单位口径（万元/元速查表 _UNIT_RULES 注入 metric_standardization / sql_gen 两层）；修正 income.net_profit 被错标为「元」（实为万元）；硬性禁令新增「金额列间禁止 ×/÷10000」",
       "eval_ref": "docs/评估报告/80题全量SQL回归_2026-09-10.md"
     },
     {

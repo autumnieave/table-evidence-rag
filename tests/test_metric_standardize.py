@@ -127,7 +127,7 @@ def test_metric_standardize_max_tokens_tightened():
 
 
 def test_financial_prompts_new_constants_self_check():
-    assert financial_prompts.FINANCIAL_PROMPT_VERSION == "2026-09-10-v10"  # B-33: 金额列单位口径补齐
+    assert financial_prompts.FINANCIAL_PROMPT_VERSION == "2026-10-15-v11"  # B-37: 分析层计数一致性硬约束
     metric = financial_prompts.METRIC_STANDARDIZATION_SYSTEM_PROMPT
     sql_gen = financial_prompts.SQL_GEN_SYSTEM_PROMPT
     assert "standard_fields" in metric

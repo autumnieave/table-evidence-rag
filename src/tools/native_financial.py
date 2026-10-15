@@ -422,6 +422,61 @@ def _mean_consistency_error(
     )
 
 
+_RE_TOTAL_COUNT = re.compile(
+    r"(?:共|合计|总计|一共|共计|总共有)"      # 合计类引导词
+    r"[^0-9，。；、：\n]{0,6}?"                 # 允许“筛选出/计有”等少量连接字
+    r"(?:约|近)?"
+    r"\s*(\d+)\s*(?:家|个|项|条|只|名)"
+)
+
+
+def _count_consistency_error(rows: List[Dict[str, Any]], analysis: str) -> Optional[str]:
+    """分析文本中「合计类计数」与查询结果公司行数的自洽性核验（B-37，2026-10-15）。
+
+    只在能明确判定为笔误时才返回纠错说明，避免误伤（B-37 首轮对账的 3 条候选全为假阳性）：
+    1. 聚合行不计入公司计数（B2042：末行是工具追加的行业均值行）；
+    2. TopN（前十/后十）与分组计数不与总行数直接比（B2046 / B2051）；
+    3. 分组计数之和等于总行数即视为自洽（B2051：18+29+25=72）；
+    4. 与总行数差距过大时无法判定为同一样本的笔误，只记日志不触发重试。
+
+    Args:
+        rows: SQL 查询结果（可能含聚合行）
+        analysis: 分析层文本
+
+    Returns:
+        需重写时返回中文纠错说明；自洽或无法判定返回 None
+    """
+    n = _company_rows(rows)
+    text = analysis or ""
+    if n < 3 or not text:
+        return None
+    counts: List[int] = []
+    for raw in _RE_TOTAL_COUNT.findall(text):
+        try:
+            counts.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+    if not counts:
+        return None
+    if n in counts:
+        return None
+    if len(counts) >= 2 and sum(counts) == n:
+        return None
+    tolerance = max(1, round(n * 0.1))
+    near = [c for c in counts if abs(c - n) <= tolerance]
+    if not near:
+        logger.warning(
+            "原生财务查询：计数核验差异过大，不足以判定为笔误，跳过重试（答案计数=%s 实际公司行=%d）",
+            counts, n,
+        )
+        return None
+    return (
+        f"计数不一致：答案称“共 {near[0]} 家/项”，而【查询结果】实际为 {n} 家公司行"
+        f"（用户消息已给出【结果行数】：{n}）。请按 {n} 重写计数类表述；"
+        f"如做分组统计，各组计数之和必须等于 {n}。"
+    )
+
+
 def _mean_ratio_equivalence_issue(text: str) -> Optional[str]:
     """检测“平均负债/平均资产相除后与比率均值一致”等错误等价句（B2036-Q2 修复）。
 
@@ -843,6 +898,9 @@ def _generate_analysis(rag: Any, question: str, rows: List[Dict[str, Any]]) -> s
             f"重构问题：{question}\n"
             f"查询结果：{_fmt_rows(rows)}\n"
             f"计算结果：{calc_result}\n"
+            f"结果行数：{_company_rows(rows)} 家公司行"
+            "（B-37 硬约束：计数类结论——“共 X 家/合计 X 项”、分组“各 X 家”——必须与该行数完全一致，"
+            "分组计数之和必须等于它；聚合行不计入公司计数）\n"
             "注意：查询结果为数据库原始值（如 net_profit 单位为元、net_profit_10k_yuan 为万元、"
             "total_operating_revenue 为万元）。请按数值量级换算为合适的单位（万元/亿元）后再表述，"
             "全文单位必须统一，严禁直接复读原始大数字而忽略单位。"
@@ -878,9 +936,11 @@ def _generate_analysis(rag: Any, question: str, rows: List[Dict[str, Any]]) -> s
                 "请严格按系统规则重写：行业均值必须为全部公司行指标的平均值（AVG）并注明样本数与口径，"
                 "严禁用首行单公司数据冒充行业均值；涉及“是否符合负债总额/资产总额”时需区分算数平均与加权口径，"
                 "不得用平均负债总额/平均资产总额相除来冒充验证结果。"
+                "计数类结论（共 X 家/合计 X 项）必须与用户消息的【结果行数】完全一致，"
+                "分组计数之和必须等于该行数。"
             )
         analysis = _call(_user_content(extra))
-        issue = _mean_consistency_error(question, rows, analysis, hint)
+        issue = _mean_consistency_error(question, rows, analysis, hint) or _count_consistency_error(rows, analysis)
         if not issue:
             return analysis
         last_error = issue
