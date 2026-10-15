@@ -359,12 +359,22 @@ class LangGraphMultiAgentPlanner:
         def _exec(task: Dict[str, str]) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
             agent = task.get("agent")
             query = (task.get("query") or "").strip()
-            if agent == "financial":
-                self._emit("query_financial")
-                return ("financial", {"query": query, "raw": self._run_financial(query, user_id)})
-            if agent == "research":
-                self._emit("search_reports")
-                return ("research", {"query": query, "raw": self._run_research(query)})
+            try:
+                if agent == "financial":
+                    self._emit("query_financial")
+                    return ("financial", {"query": query, "raw": self._run_financial(query, user_id)})
+                if agent == "research":
+                    self._emit("search_reports")
+                    return ("research", {"query": query, "raw": self._run_research(query)})
+            except Exception as exc:  # noqa: BLE001
+                # D3（2026-10-15 修）：任一子任务异常（如检索/重排超时）不再让整题失败；
+                # 记录错误并返回空结果，其余子任务（如财务取数）仍可出答案
+                logger.warning("子任务执行失败（%s | %s）: %s", agent, query[:40], exc)
+                return (agent, {
+                    "query": query,
+                    "raw": {"content": "", "image": [], "sql": "", "chart_json": None,
+                            "error": f"{type(exc).__name__}: {exc}"},
+                })
             return (None, None)
 
         parallel = getattr(self.config, "AGENT_PARALLEL_TOOLS", True)
@@ -407,7 +417,8 @@ class LangGraphMultiAgentPlanner:
             for ref in raw.get("references") or []:
                 if isinstance(ref, dict) and ref not in result["references"]:
                     result["references"].append(ref)
-        if not found:
+        if not found or not str(result.get("content") or "").strip():
+            # D3：子任务全部失败或返回空内容时给可读兜底，而不是回空答案
             return {"result": {"content": "抱歉，未能完成查询。", "image": [], "references": []}}
         return {"result": result}
 

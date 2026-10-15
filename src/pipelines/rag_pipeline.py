@@ -10,6 +10,7 @@ import re
 import datetime
 import hashlib
 import pickle
+import random
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -52,6 +53,41 @@ from data import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _chat_create_with_retry(client: Any, *, attempts: int = 3, base_sleep: float = 1.0, **kwargs: Any) -> Any:
+    """带指数退避的 chat.completions.create（D4，2026-10-15）。
+
+    轻量辅助调用（过滤条件提取 / 摘要生成）原先裸调 SDK，遇 429 限流立即降级；
+    这里复用主生成的重试口径（最多 attempts 次 + 指数退避 + 抖动），
+    与 tools/native_financial._chat_create_with_retry（D1）语义一致。
+
+    Args:
+        client: OpenAI 兼容客户端
+        attempts: 最多尝试次数
+        base_sleep: 退避基数秒（第 n 次失败后等待 base_sleep * 2**(n-1) + 抖动）
+        **kwargs: 透传给 chat.completions.create
+
+    Returns:
+        原始响应对象；全部失败时抛出最后一次异常
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return client.chat.completions.create(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt >= attempts:
+                break
+            sleep_s = base_sleep * (2 ** (attempt - 1)) + random.uniform(0.0, 0.5)
+            logger.warning(
+                "轻量 LLM 调用失败（%s，第 %d/%d 次），%.1fs 后重试: %s",
+                type(exc).__name__, attempt, attempts, sleep_s, str(exc)[:120],
+            )
+            time.sleep(sleep_s)
+    raise last_exc  # type: ignore[misc]
+
+
 def _table_html_to_text(html: str) -> str:
     """将聚合表格的 HTML 行文本转为可读纯文本。
 
@@ -450,8 +486,10 @@ class RAGPipeline:
 
         try:
             # 使用已有的 LLM 客户端进行单次调用（非流式）
-            response = self.llm_generator.client.chat.completions.create(
-                model="qwen-turbo",  # 轻量模型，降低成本
+            # D4（2026-10-15）：qwen-turbo 在本账号配额耗尽（恒 429 limit_requests），换 qwen-flash + 退避重试
+            response = _chat_create_with_retry(
+                self.llm_generator.client,
+                model="qwen-flash",  # 轻量模型，速度快
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
                 max_tokens=256
@@ -580,7 +618,7 @@ class RAGPipeline:
     def _generate_summaries(self, texts: List[str], batch_size: int = 20) -> List[str]:
         """
         批量生成文本摘要。对于空文本或过短文本，直接返回原文前50字。
-        使用 qwen-turbo 模型以降低成本。
+        使用 qwen-flash 模型以降低成本（D4：原 qwen-turbo 恒 429）。
         """
         summaries = []
         # 分批调用 API
@@ -596,8 +634,9 @@ class RAGPipeline:
                 prompt = SUMMARY_PROMPT_TEMPLATE.format(text=text)
 
                 try:
-                    response = self.llm_generator.client.chat.completions.create(
-                        model="qwen-turbo",
+                    response = _chat_create_with_retry(
+                        self.llm_generator.client,
+                        model="qwen-flash",
                         messages=[{"role": "user", "content": prompt}],
                         temperature=0.3,
                         max_tokens=80
@@ -783,7 +822,7 @@ class RAGPipeline:
         prompt = IMAGE_DETECT_PROMPT_TEMPLATE.format(text=text[:4000])
         try:
             response = self.llm_generator.client.chat.completions.create(
-                model="qwen3-max",  # 轻量模型，速度快
+                model="qwen-flash",  # 轻量模型，速度快
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
                 max_tokens=128

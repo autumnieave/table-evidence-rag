@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import random
 import re
 import threading
 import time
@@ -777,6 +779,59 @@ def _generate_sql(
     return "", errors
 
 
+def _chat_create_with_retry(client: Any, *, attempts: int = 3, base_sleep: float = 1.0, **kwargs: Any) -> Any:
+    """带指数退避的 chat.completions.create（D1，2026-10-15）。
+
+    分析/图表等辅助调用原先裸调 SDK，遇到 429 限流立即降级为规则兜底；
+    这里复用主生成的重试口径（最多 attempts 次 + 指数退避 + 抖动）。
+
+    Args:
+        client: OpenAI 兼容客户端
+        attempts: 最多尝试次数
+        base_sleep: 退避基数秒（第 n 次失败后等待 base_sleep * 2**(n-1) + 抖动）
+        **kwargs: 透传给 chat.completions.create
+
+    Returns:
+        原始响应对象；全部失败时抛出最后一次异常
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return client.chat.completions.create(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt >= attempts:
+                break
+            sleep_s = base_sleep * (2 ** (attempt - 1)) + random.uniform(0.0, 0.5)
+            logger.warning(
+                "辅助 LLM 调用失败（%s，第 %d/%d 次），%.1fs 后重试: %s",
+                type(exc).__name__, attempt, attempts, sleep_s, str(exc)[:120],
+            )
+            time.sleep(sleep_s)
+    raise last_exc  # type: ignore[misc]
+
+
+def _dump_rows_if_enabled(question: str, sql: str, rows: List[Dict[str, Any]]) -> None:
+    """按 env `NATIVE_FINANCIAL_DUMP_ROWS` 落盘查询结果行（E，2026-10-15）。
+
+    默认关闭（未设 env 时零开销）；开启时按 JSONL 追加写，供 B-37「分析层计数 vs SQL 行数」对账。
+
+    Args:
+        question: 原始问题
+        sql: 实际执行的 SQL
+        rows: 查询结果行
+    """
+    path = os.getenv("NATIVE_FINANCIAL_DUMP_ROWS", "").strip()
+    if not path:
+        return
+    try:
+        rec = {"问题": question, "SQL": sql, "行数": len(rows or []), "rows": list(rows or [])}
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("结果行落盘失败（不影响查询）: %s", exc)
+
+
 def _generate_analysis(rag: Any, question: str, rows: List[Dict[str, Any]]) -> str:
     """LLM 基于查询结果生成分析文本（模式一/二）。"""
     hint = _industry_mean_hint(question, rows)
@@ -797,7 +852,8 @@ def _generate_analysis(rag: Any, question: str, rows: List[Dict[str, Any]]) -> s
     def _call(user_content: str) -> str:
         """调用一次分析 LLM，异常返回兜底文案。"""
         try:
-            resp = rag.llm_generator.client.chat.completions.create(
+            resp = _chat_create_with_retry(
+                rag.llm_generator.client,
                 model=rag.config.LLM_MODEL,
                 messages=[
                     {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
@@ -956,7 +1012,8 @@ def _generate_chart(rag: Any, question: str, rows: List[Dict[str, Any]]) -> Opti
         return None
     user_content = f"用户问题：{question}\n查询结果：{_fmt_rows(rows)}"
     try:
-        resp = rag.llm_generator.client.chat.completions.create(
+        resp = _chat_create_with_retry(
+            rag.llm_generator.client,
             model=rag.config.LLM_MODEL,
             messages=[
                 {"role": "system", "content": CHART_GEN_SYSTEM_PROMPT},
@@ -1092,6 +1149,7 @@ def native_financial_query(rag: Any, user_query: str, user_id: str = "default") 
                     {"content": content, "image": [], "sql": "", "chart_json": None}, ensure_ascii=False
                 )
             rows = _merge_company_rows(_execute_sql(run_conn, sql))
+            _dump_rows_if_enabled(query_text, sql, rows)
             if not rows:
                 content, _tid = build_refuse_data_not_found(
                     subject=query_text, detail="（SQL 已执行成功，但未返回任何数据）"
