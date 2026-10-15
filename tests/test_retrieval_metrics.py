@@ -5,7 +5,17 @@
 """
 from __future__ import annotations
 
-from eval.retrieval_metrics import evaluate, evaluate_question, precision_at_k, recall_at_k, reciprocal_rank
+import math
+
+from eval.retrieval_metrics import (
+    dcg_at_k,
+    evaluate,
+    evaluate_question,
+    ndcg_at_k,
+    precision_at_k,
+    recall_at_k,
+    reciprocal_rank,
+)
 
 
 def _chunks(flags):
@@ -77,3 +87,51 @@ def test_evaluate_aggregate_and_skip():
     assert s["Precision@2"] == 0.5
     assert s["MRR"] == 0.75
     assert s["零相关题数"] == 0
+
+
+# --------------------------------------------------------------------------
+# nDCG@K（2026-10-16，L5-A 复评用；增益 完全相关 1.0 / 部分相关 0.5 / 其余 0.0）
+# --------------------------------------------------------------------------
+def test_dcg_at_k_position_decay():
+    """位置越靠后，同一增益贡献越小（log2(i+1) 折扣）"""
+    assert dcg_at_k([1.0], k=1) == 1.0
+    assert abs(dcg_at_k([0.0, 1.0], k=2) - 1 / math.log2(3)) < 1e-12
+    assert dcg_at_k([], k=10) == 0.0
+
+
+def test_ndcg_is_one_for_ideal_ranking():
+    """增益本身按降序排列时 nDCG = 1.0"""
+    assert ndcg_at_k([1.0, 1.0, 0.0], k=3) == 1.0
+    assert ndcg_at_k([0.5, 0.5], k=2) == 1.0
+
+
+def test_ndcg_penalizes_relevant_at_tail():
+    """相关片段被排到末尾 → nDCG < 1（此处 0.5）"""
+    assert ndcg_at_k([0.0, 0.0, 1.0], k=3) == 0.5
+
+
+def test_ndcg_zero_when_no_positive_gain():
+    assert ndcg_at_k([0.0, 0.0, 0.0], k=3) == 0.0
+    assert ndcg_at_k([], k=10) == 0.0
+
+
+def test_ndcg_respects_k_cut():
+    """K 截断后只看前 K 条：相关片段落在第 2 位，K=1 拿不到、K=2 拿到但被折扣"""
+    gains = [0.0, 1.0]
+    assert ndcg_at_k(gains, k=1) == 0.0
+    assert abs(ndcg_at_k(gains, k=2) - 1 / math.log2(3)) < 1e-9
+
+
+def test_evaluate_question_adds_ndcg_key():
+    m = evaluate_question(_chunks([True, False, True]), k_values=(2, 10))
+    assert "nDCG@2" in m and "nDCG@10" in m
+    # 两条相关排在第 1、3 位 → 有折扣（1.5 / IDCG）
+    assert abs(m["nDCG@10"] - 1.5 / (1 + 1 / math.log2(3))) < 1e-4
+    # 前 2 条里只有 1 条相关
+    assert abs(m["nDCG@2"] - (1.0 / 1.0)) < 1e-9
+
+
+def test_evaluate_summary_reports_mean_ndcg():
+    rows = [{"bid": "Q1", "chunks": _chunks([True, False])}]
+    s = evaluate(rows, k_values=(2,))["summary"]
+    assert s["nDCG@2"] == 1.0

@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""eval/retrieval_metrics.py —— 检索排序质量指标（Hit Rate@K / Precision@K / MRR）
+"""eval/retrieval_metrics.py —— 检索排序质量指标（Hit Rate@K / Precision@K / MRR / nDCG@K）
 
 用途（B-24A）：把「检索到底排得准不准」从黑盒（只看生成答案）升级为可量化指标。
 - 输入 = 每题的**有序相关性标注**（retrieval top-K 逐条 relevant: true/false，顺序即排序）；
-- 输出 = 每题 Hit Rate@K / Precision@K / MRR + 汇总均值。
+- 输出 = 每题 Hit Rate@K / Precision@K / MRR / nDCG@K + 汇总均值。
 
 口径说明（重要）：
 - 本模块**只做计算**，不产生标注；标注来源既可以是模型预标注（B-24A 草稿口径），
@@ -21,6 +21,11 @@ B-24B 扩展（2026-09-27，四态人工判定 + 新口径）：
 - Precision 分母只数 `计入Precision != False` 的条数（B-24B 判据 3：同文件第 3 条起不计入）；
 - **与 legacy 口径（B-24A 二值模型判定）不可直接对比**——定义不同，CLI 输出的 `口径` 字段已注明。
 
+nDCG@K（2026-10-16，L5-A 复评用）：
+- 增益按四态映射：完全相关 1.0 / 部分相关 0.5 / 不相关（未判定）0.0，与 Hit Rate 同源；
+- ``DCG@K = Σ gain_i / log2(i+1)``（i 从 1 起）；IDCG 取**标注集内增益降序**作为理想排序；
+- **标注集只覆盖 top-K，故本值不是全语料 nDCG**，只能用于同批标注下的横向对比（如换索引前后）。
+
 用法：
   python eval/retrieval_metrics.py --labels 训练结果数据/retrieval_prelabel_20260910.json
   python eval/retrieval_metrics.py --labels xxx.json --k 10 --k20 20 --json-out 训练结果数据/retrieval_metrics.json
@@ -31,6 +36,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -75,6 +81,27 @@ def reciprocal_rank(ranked_relevant: Sequence[bool]) -> float:
     return 0.0
 
 
+def dcg_at_k(gains: Sequence[float], k: int = 10) -> float:
+    """DCG@K：Σ gain_i / log2(i+1)，i 从 1 起（增益越大越好，位置越靠后衰减越多）"""
+    k = max(0, int(k))
+    return sum(g / math.log2(i + 1) for i, g in enumerate(list(gains)[:k], start=1))
+
+
+def ndcg_at_k(gains: Sequence[float], k: int = 10) -> float:
+    """NDCG@K = DCG@K / IDCG@K（增益为相关性分数，完全相关 1.0 / 部分相关 0.5 / 不相关 0.0）
+
+    IDCG@K 取**当前标注集内增益降序**作为理想排序；标注集只覆盖检索 top-K、
+    不含语料全集，因此本值**不等价于全语料 nDCG**，只用于同批标注下的横向对比。
+    标注集内无任何正增益时返回 0.0。
+    """
+    k = max(0, int(k))
+    topk = list(gains)[:k]
+    idcg = dcg_at_k(sorted(topk, reverse=True), k)
+    if idcg <= 0:
+        return 0.0
+    return dcg_at_k(topk, k) / idcg
+
+
 # --------------------------------------------------------------------------
 # B-24B：四态人工判定 + 新口径（部分相关 0.5；Precision 只数「计入」条数）
 # --------------------------------------------------------------------------
@@ -96,11 +123,13 @@ def _judged_caliber(partial_weight: float = PARTIAL_WEIGHT) -> Dict[str, Any]:
             "Hit Rate@K": "分母 = 标注集内 完全相关+部分相关 的条数；分子 = top-K 内 完全相关×1.0 + 部分相关×%.1f" % partial_weight,
             "Precision@K": "分母 = top-K 内 计入Precision≠False 的条数；分子 = 其中 完全相关×1.0 + 部分相关×%.1f" % partial_weight,
             "MRR": "首个 完全相关或部分相关 片段的排名倒数（无则 0）",
+            "nDCG@K": "DCG@K/IDCG@K；增益 = 完全相关 1.0 / 部分相关 %.1f / 其余 0.0；IDCG 取标注集内增益降序" % partial_weight,
         },
         "判据依据": "判据1（数值/结论 + 主体期间一致）；判据2（部分相关 0.5）；判据3（Precision 同文件最多 2 条，按 rank 序次）",
         "提示": [
             "标注集只覆盖检索 top-10，不是语料全集 → Hit Rate@K 的分母为标注集内相关数，不等价于标准 Recall@K（需全语料 ground truth）",
             "本口径与 B-24A 草稿口径（二值模型判定）不可直接对比：定义不同，数值差异不代表质量变化",
+            "nDCG@K 的 IDCG 只取标注集内增益降序，不等价于全语料 nDCG；仅用于同批标注下的横向对比",
         ],
     }
 
@@ -155,6 +184,7 @@ def evaluate_judged_question(
         "MRR": round(1.0 / first, 4) if first else 0.0,
         "计入Precision片段数": sum(1 for x in included if x),
     }
+    gains = [_credit(s, partial_weight) for s in states]
     for k in k_values:
         topk = list(zip(states[:k], included[:k]))
         numerator = sum(_credit(s, partial_weight) for s, _ in topk)
@@ -162,6 +192,7 @@ def evaluate_judged_question(
         counted = [s for s, keep in topk if keep]
         credit = sum(_credit(s, partial_weight) for s in counted)
         out["Precision@%d" % k] = round(credit / len(counted), 4) if counted else 0.0
+        out["nDCG@%d" % k] = round(ndcg_at_k(gains, k), 4)
     return out
 
 
@@ -196,6 +227,7 @@ def evaluate_judged(
     for k in k_values:
         summary["Hit Rate@%d" % k] = _mean("Hit Rate@%d" % k)
         summary["Precision@%d" % k] = _mean("Precision@%d" % k)
+        summary["nDCG@%d" % k] = _mean("nDCG@%d" % k)
     summary["MRR"] = _mean("MRR")
     return {"summary": summary, "per_question": per_q}
 
@@ -230,9 +262,11 @@ def evaluate_question(chunks: List[Dict[str, Any]], k_values: Sequence[int] = (1
         "首相关排名": next((i for i, ok in enumerate(ranked, 1) if ok), None),
         "MRR": round(reciprocal_rank(ranked), 4),
     }
+    gains = [1.0 if x else 0.0 for x in ranked]
     for k in k_values:
         out["Hit Rate@%d" % k] = round(recall_at_k(ranked, k, total_relevant if total_relevant else len(ranked)), 4)
         out["Precision@%d" % k] = round(precision_at_k(ranked, k), 4)
+        out["nDCG@%d" % k] = round(ndcg_at_k(gains, k), 4)
     return out
 
 
@@ -264,6 +298,7 @@ def evaluate(rows: List[Dict[str, Any]], k_values: Sequence[int] = (10,)) -> Dic
     for k in k_values:
         summary["Hit Rate@%d" % k] = _mean("Hit Rate@%d" % k)
         summary["Precision@%d" % k] = _mean("Precision@%d" % k)
+        summary["nDCG@%d" % k] = _mean("nDCG@%d" % k)
     summary["MRR"] = _mean("MRR")
     return {"summary": summary, "per_question": per_q}
 
@@ -279,7 +314,7 @@ def load_rows(path: Path) -> List[Dict[str, Any]]:
 def main() -> int:
     """CLI 入口"""
     _stdout_utf8()
-    ap = argparse.ArgumentParser(description="检索排序质量指标（Hit Rate@K / Precision@K / MRR）")
+    ap = argparse.ArgumentParser(description="检索排序质量指标（Hit Rate@K / Precision@K / MRR / nDCG@K）")
     ap.add_argument("--labels", required=True, help="标注 JSON（B-24A 预标注或 B-24B 人工终稿）")
     ap.add_argument("--k", type=int, default=10, help="主 K（默认 10）")
     ap.add_argument("--k20", type=int, default=20, help="次 K（默认 20）")
@@ -311,7 +346,8 @@ def main() -> int:
     print("口径 = %s" % result["口径"]["模式"])
     print("题数 %d（跳过 %d，零相关 %d）" % (s["题数"], s["跳过题数"], s["零相关题数"]))
     for k in ks:
-        print("  Hit Rate@%d = %.4f ｜ Precision@%d = %.4f" % (k, s["Hit Rate@%d" % k], k, s["Precision@%d" % k]))
+        print("  Hit Rate@%d = %.4f ｜ Precision@%d = %.4f ｜ nDCG@%d = %.4f" % (
+            k, s["Hit Rate@%d" % k], k, s["Precision@%d" % k], k, s["nDCG@%d" % k]))
     print("  MRR = %.4f" % s["MRR"])
     for hint in result["口径"].get("提示", []):
         print("  · %s" % hint)

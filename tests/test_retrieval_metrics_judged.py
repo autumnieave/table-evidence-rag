@@ -6,11 +6,14 @@ MRR 的部分相关命中、整题跳过、legacy 口径未被改动。
 """
 from __future__ import annotations
 
+import math
+
 from eval.retrieval_metrics import (
     JUDGMENT_FULL,
     JUDGMENT_NONE,
     JUDGMENT_PARTIAL,
     _credit,
+    ndcg_at_k,
     evaluate,
     evaluate_judged,
     evaluate_judged_question,
@@ -213,3 +216,26 @@ def test_legacy_ignores_four_state_field():
     rows = [{"bid": "B1", "chunks": [{"人工判定": JUDGMENT_FULL, "judge_relevant": False}]}]
     result = evaluate(rows, [10])
     assert result["summary"]["Hit Rate@10"] == 0.0
+
+
+# --------------------------------------------------------------------------
+# nDCG@K：四态增益与 judged 口径一致
+# --------------------------------------------------------------------------
+def test_ndcg_uses_four_state_gains():
+    """完全相关 1.0 / 部分相关 0.5：理想序 nDCG = 1.0"""
+    assert ndcg_at_k([1.0, 0.5, 0.0], k=3) == 1.0
+
+
+def test_evaluate_judged_question_reports_ndcg():
+    chunks = [_c(judged=JUDGMENT_FULL), _c(judged=JUDGMENT_NONE)]
+    m = evaluate_judged_question(chunks, k_values=(10,))
+    assert m["nDCG@10"] == 1.0
+    # 相关片段排到第 2 位 → 有折扣
+    m2 = evaluate_judged_question([_c(judged=JUDGMENT_NONE), _c(judged=JUDGMENT_FULL)], k_values=(10,))
+    assert abs(m2["nDCG@10"] - round(1 / math.log2(3), 4)) < 1e-9
+
+
+def test_evaluate_judged_summary_reports_mean_ndcg():
+    rows = [_row("B1", [JUDGMENT_FULL, JUDGMENT_NONE]), _row("B2", [JUDGMENT_NONE, JUDGMENT_NONE])]
+    s = evaluate_judged(rows, k_values=(10,))["summary"]
+    assert s["nDCG@10"] == 0.5
