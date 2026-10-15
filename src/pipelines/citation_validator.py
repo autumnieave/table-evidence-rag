@@ -229,6 +229,28 @@ class CitationValidator:
         """
         return _NUMBER_RE.findall(_collapse_number_spaces(text or ""))
 
+    def unit_variants(self, number: str) -> Dict[str, str]:
+        """公开的单位换算变体（供 claim 级证据定位复用同一换算表与舍入口径）。
+
+        Args:
+            number: 数字字符串（如 "58.86"）
+
+        Returns:
+            变体 -> 换算方向 字典（如 {"5886": "百万元<->亿元"}）
+        """
+        return _unit_variants(number)
+
+    def normalize_for_match(self, text: str) -> str:
+        """公开的匹配口径归一化（供 claim 级证据定位等同口径复用）。
+
+        Args:
+            text: 原始文本
+
+        Returns:
+            归一化后的文本（与 ``number_in_text`` 期望的 haystack 口径一致）
+        """
+        return self._normalize_for_match(text)
+
     def _normalize_for_match(self, text: str) -> str:
         """按匹配口径归一化文本。
 

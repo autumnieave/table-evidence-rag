@@ -2,17 +2,17 @@
 
 面向上市公司研报与财报的端到端智能问答系统：用户用自然语言即可查询财务数据、研报观点，答案带引用可溯源。采用 **LangGraph 多 Agent 编排 + SQL 财务链路 + RAG 研报链路**，配套 FastAPI / React 前端与完整评估闭环。
 
-**数据规模**：473 篇上市公司研报（MinerU 解析，OCR + 表格 + 公式）+ 1252 份深圳证券交易所 / 上海证券交易所财报 PDF，抽取后入 MySQL。
+**数据规模**：473 篇上市公司研报（MinerU 解析，OCR + 表格 + 公式）+ 1432 份财报 PDF（1252 份深/上交所正式语料 + 180 份测试语料），抽取后入 MySQL。
 
 项目演示：多 Agent 编排（LangGraph supervisor-workers）、Text-to-SQL 质量闭环、混合检索与精排、五层评测体系、全栈部署。
 
-[![CI](https://github.com/autumnieave/smart-financial-qa/actions/workflows/ci.yml/badge.svg)](https://github.com/autumnieave/smart-financial-qa/actions/workflows/ci.yml) [![tests](https://img.shields.io/badge/554%20tests-passing-brightgreen)]() [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![CI](https://github.com/autumnieave/smart-financial-qa/actions/workflows/ci.yml/badge.svg)](https://github.com/autumnieave/smart-financial-qa/actions/workflows/ci.yml) [![tests](https://img.shields.io/badge/614%20tests-passing-brightgreen)]() [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 ## 核心指标
 
 - **SQL 编译通过率 100%**（80 题全量回归，实际执行 95 条 SQL，95/95 全部通过；提示词 v11，有 SQL 需求的题 64/64；分母随 supervisor 路由波动）
 - **引用文件可溯源 100%（1080/1080）**、**答案数字可溯源 99.9%（4068/4071，归一化口径；3 项未溯源为非数据 token）**，人工回查真实幻觉 **0 例**
-- **554 个离线单测全部通过**（554 用例 / 41 个测试文件，零外部依赖，CI 自动执行）
+- **614 个离线单测全部通过**（614 用例 / 42 个测试文件，零外部依赖，CI 自动执行）
 - 数字级引用命中率 **70.2% → 74.9%**（混合检索：向量 + BM25 + RRF）
 
 ## 评测体系
@@ -79,7 +79,7 @@ flowchart TD
 ```bash
 # clone 后零依赖验证，不需要 API Key / 数据库 / Qdrant
 pip install -r requirements.txt
-python -m pytest tests/ -q    # 554 个离线单测
+python -m pytest tests/ -q    # 614 个离线单测
 ```
 
 ### 完整服务
@@ -141,7 +141,7 @@ docker compose up -d --build
 ## 测试与评估
 
 ```bash
-python -m pytest tests/ -q        # 554 个离线单测 / 41 个测试文件（零外部依赖）
+python -m pytest tests/ -q        # 614 个离线单测 / 42 个测试文件（零外部依赖）
 python -m eval citation           # L1 引用核验（需本地语料）
 python -m eval sql --suite full   # L2 SQL 全量回归（需本地 golden 数据）
 python -m eval llm-judge          # L3 答案质量（LLM-as-judge，需本地 golden 数据）
@@ -175,7 +175,7 @@ python -m eval report             # 聚合评估报告（覆盖核心指标）
 ```
 cli.py          CLI 入口（交互式问答 / --build / --rebuild / --query）
 src/            业务源码（15 个包：app / core / pipelines / agents / prompts / config / data / tools 等）
-tests/          554 个用例 / 41 个测试文件（离线单测，零外部依赖）
+tests/          614 个用例 / 42 个测试文件（离线单测，零外部依赖）
 docs/           设计与评估文档（最权威：详细设计方案_上市公司智能问数助手系统.md；ARCHITECTURE / DEPLOYMENT / 评估报告 / 问题记录 / ai-context）
 eval/           评估闭环（golden / sql / citation / retrieval / challenge / consistency / llm-judge / report）
 scripts/        交互式问答入口与 CLI 启动器（interactive.py）

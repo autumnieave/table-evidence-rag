@@ -6,6 +6,7 @@
 - SQLiteQueryCache：表 query_cache(key PK, payload TEXT, created_at REAL, expires_at REAL)
 - 线程安全：每线程独立连接（与 memory/store.py 同模式）
 - 开关与 TTL 由 RAGConfig 控制：QUERY_CACHE_ENABLED / QUERY_CACHE_TTL / QUERY_CACHE_DB
+- 命中统计：进程内 hit / miss / set 计数（stats() / reset_stats()），用于量化缓存命中率
 
 注意（证据链口径）：缓存命中不会重新生成 SQL/答案。做"修复后真实重跑"回归时，
 必须设 QUERY_CACHE_ENABLED=false 或清空缓存库，否则会命中旧结果。
@@ -52,6 +53,8 @@ class SQLiteQueryCache:
         self.default_ttl = int(ttl)
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
+        self._stats_lock = threading.Lock()
+        self._stats: Dict[str, int] = {"hit": 0, "miss": 0, "set": 0}
         self._init_schema()
 
     def _conn(self) -> sqlite3.Connection:
@@ -69,6 +72,29 @@ class SQLiteQueryCache:
         conn.execute(_TABLE_SQL)
         conn.commit()
 
+    def _bump(self, name: str) -> None:
+        """累加命中统计（线程安全；统计失败不影响主流程）。"""
+        try:
+            with self._stats_lock:
+                self._stats[name] = self._stats.get(name, 0) + 1
+        except Exception:  # noqa: BLE001
+            pass
+
+    def stats(self) -> Dict[str, Any]:
+        """返回命中统计快照：hit / miss / set / total / hit_rate（四舍五入保留 4 位）。"""
+        with self._stats_lock:
+            snap: Dict[str, Any] = dict(self._stats)
+        total = snap.get("hit", 0) + snap.get("miss", 0)
+        snap["total"] = total
+        snap["hit_rate"] = round(snap.get("hit", 0) / total, 4) if total else 0.0
+        return snap
+
+    def reset_stats(self) -> None:
+        """清零命中统计（不影响缓存内容）。"""
+        with self._stats_lock:
+            for key in list(self._stats):
+                self._stats[key] = 0
+
     def get(self, key: str) -> Optional[Dict[str, Any]]:
         """读取缓存；不存在/已过期/解析失败返回 None（不抛异常）。"""
         now = time.time()
@@ -78,15 +104,19 @@ class SQLiteQueryCache:
                 "SELECT payload, expires_at FROM query_cache WHERE key=?", (key,)
             ).fetchone()
             if row is None:
+                self._bump("miss")
                 return None
             payload, expires_at = row
             if expires_at is not None and now > expires_at:
                 conn.execute("DELETE FROM query_cache WHERE key=?", (key,))
                 conn.commit()
+                self._bump("miss")
                 return None
+            self._bump("hit")
             return json.loads(payload)
         except Exception as exc:  # noqa: BLE001
             logger.warning("query_cache.get 失败（按未命中处理）: %s", exc)
+            self._bump("miss")
             return None
 
     def set(self, key: str, data: Dict[str, Any], ttl: Optional[int] = None) -> None:
@@ -103,6 +133,7 @@ class SQLiteQueryCache:
                 (key, payload, now, expires_at),
             )
             conn.commit()
+            self._bump("set")
         except Exception as exc:  # noqa: BLE001
             logger.warning("query_cache.set 失败（忽略，不影响主流程）: %s", exc)
 

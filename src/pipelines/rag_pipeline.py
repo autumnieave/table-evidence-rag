@@ -32,6 +32,7 @@ from chains.rag_chain import LangChainRAGChain
 from filters import QueryFilters
 from memory import ClarifyStatus, ConversationState, MemoryStore, create_memory_store
 from prompts.fallback import build_suggest_missing, log_fallback as _log_fallback
+from tools.claim_evidence_locator import attach_full_text, locate_claims_per_reference
 from tools.tools_registry import get_agent_tools
 from core.interfaces import IGenerator, IReranker, IRetriever
 from core.retrievers import BM25Retriever, HandwrittenRetriever, HybridRetriever, LangChainRetriever
@@ -844,7 +845,10 @@ class RAGPipeline:
         避免聚合导致 paper_path/摘要取错文件。
 
         text 是引用片段（非表格块默认该块前 200 字），并附 chunk_index / chunk_total /
-        text_total / text_truncated，供前端如实标注片段来源位置与截断情况。
+        text_total / text_truncated，供前端如实标注片段来源位置与截断情况；
+        full_text 是该块**原文全文**（= text_total 对应的字符串，即喂给生成阶段的同一条
+        上下文；表格聚合块由多条表格行拼接而成，当前语料为纯文本 ``表头: 值; ...``），
+        用于评测 / 人工复核的同口径材料与 claim 级证据定位。
         """
         orig_idx = index_map.get(idx, idx) if index_map else idx
         chunk_index: Optional[int] = None
@@ -895,7 +899,7 @@ class RAGPipeline:
             summary_text,
         )
 
-        return {
+        ref = {
             "paper_path": paper_path,
             "text": summary_text,
             "paper_image": paper_image,
@@ -904,7 +908,58 @@ class RAGPipeline:
             "text_total": text_total,
             "text_truncated": text_truncated,
         }
+        # 引用全文默认不进 API payload（体积约 8 倍）；评测 / 人工复核用
+        # CITATION_FULL_TEXT_IN_PAYLOAD=1 开启（口径见 tools/claim_evidence_locator.py）
+        attach_full_text(ref, full_text)
+        # 私有暂存：仅供 claim 级定位（_annotate_reference_claims）使用，定位后立即 pop，
+        # 绝不随 payload 返回；引用全文是否进响应体只由上面的开关决定
+        ref["_full_text"] = full_text
+        return ref
     
+    def _annotate_reference_claims(self, result: Dict[str, Any]) -> None:
+        """给引用条目补 claim 级定位（产品层，与评测层共享 tools/claim_evidence_locator.py）。
+
+        引用卡片原先只有「块级摘要」，看不出这条引用**支撑答案里的哪句话**。这里用与评测层
+        完全相同的定位逻辑（数字 claim 走规则，窗口 / 单位变体 / SQL 容差口径一致），把答案里的
+        数字断言逐条定位到引用原文，写成 ``ref["claims"]``：每项含断言原文、命中与未命中数字、
+        证据片段（字符偏移 + 档位 + 分数）。
+
+        定位材料取 ``_build_reference_for_doc`` 暂存的 ``_full_text``（块原文全文，定位后即 pop），
+        因此**定位用的是全文**；引用全文是否进响应体仍由 ``CITATION_FULL_TEXT_IN_PAYLOAD`` 决定。
+
+        Args:
+            result: 形如 ``{"content": 答案, "references": [...]}``，就地写入 claims
+
+        Returns:
+            None
+        """
+        references = result.get("references") if isinstance(result, dict) else None
+        if not references:
+            return
+        # 先取出全文并 pop 私有字段：无论定位是否成功，私有字段都不允许进入 payload
+        materials: List[Dict[str, Any]] = []
+        for ref in references:
+            if not isinstance(ref, dict):
+                materials.append({"full_text": ""})
+                continue
+            materials.append(
+                {
+                    "paper_path": ref.get("paper_path", ""),
+                    "chunk_index": ref.get("chunk_index"),
+                    "is_sql_material": ref.get("is_sql_material", False),
+                    "full_text": ref.pop("_full_text", "") or ref.get("text", ""),
+                }
+            )
+        try:
+            blocks = locate_claims_per_reference(str(result.get("content") or ""), materials)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("claim 级引用定位失败（回退块级摘要）: %s", e)
+            return
+        for ref, ref_claims in zip(references, blocks):
+            if isinstance(ref, dict):
+                ref["claims"] = ref_claims
+                ref["n_claims"] = len(ref_claims)
+
     def _load_conversation(self, user_id: str) -> ConversationState:
         """按 user_id 加载会话状态（优先持久化存储；缺失/过期回退新会话）"""
         if self.memory_store is not None:
@@ -999,6 +1054,8 @@ class RAGPipeline:
             on_chunk=on_chunk,
         )
         # answer 现在是字典
+        # claim 级引用定位：聚合答案与各子链路引用在此刻才齐备，就地补 ref["claims"]
+        self._annotate_reference_claims(answer)
         state.history.append({"role": "user", "content": question})
         state.history.append({"role": "assistant", "content": json.dumps(answer, ensure_ascii=False)})
         state.last_active = time.time()
@@ -1316,9 +1373,12 @@ class RAGPipeline:
         # 5. 引用核验与过滤（拦截缺失文件引用）
         references = self._filter_citations(references, verbose=verbose)
 
-        return {
+        result = {
                 "content": answer_text,
                 "image": [],
                 "references": references
             }
+        # 6. claim 级引用定位：把每条引用对应到答案里的具体断言（产品层展示用）
+        self._annotate_reference_claims(result)
+        return result
 

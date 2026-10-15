@@ -493,6 +493,41 @@ function App() {
                   </details>
                 )
               )}
+              {ref.claims && ref.claims.length > 0 && (
+                <details className="mt-1" open>
+                  <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 select-none">
+                    本引用支撑的断言（{ref.claims.length}）
+                  </summary>
+                  <div className="text-[11px] text-gray-500 mt-1 space-y-1.5 bg-white/70 rounded p-1.5 max-h-40 overflow-y-auto">
+                    {ref.claims.slice(0, 5).map((c, i) => (
+                      <div key={i} className="leading-relaxed">
+                        <div className="text-gray-600">· {mask(c.claim, MASK_REF_TEXT)}</div>
+                        <div className="text-gray-400 pl-3">
+                          ↳ 命中：
+                          <span className="text-green-700 font-medium">
+                            {(c.matched_numbers || []).join('、') || '—'}
+                          </span>
+                          {c.missing_numbers && c.missing_numbers.length > 0 && (
+                            <span className="text-orange-600">
+                              {' '}· 未在本文命中：{c.missing_numbers.join('、')}
+                            </span>
+                          )}
+                        </div>
+                        {c.evidence && c.evidence[0] && (
+                          <div className="text-gray-400 pl-3">
+                            「…{mask(c.evidence[0].text, MASK_REF_TEXT)}…」
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    {ref.claims.length > 5 && (
+                      <div className="text-[10px] text-gray-400">
+                        （另有 {ref.claims.length - 5} 条断言未展开）
+                      </div>
+                    )}
+                  </div>
+                </details>
+              )}
               {ref.text && (
                 <details className="mt-1">
                   <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 select-none">
@@ -502,6 +537,14 @@ function App() {
                 </details>
               )}
 
+              {ref.full_text && (
+                <details className="mt-1">
+                  <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 select-none">
+                    {`引用原文全文（共 ${ref.full_text.length} 字）`}
+                  </summary>
+                  <div className="text-[11px] text-gray-500 mt-1 whitespace-pre-wrap max-h-40 overflow-y-auto">{mask(ref.full_text, MASK_REF_TEXT)}</div>
+                </details>
+              )}
               {citation && citation.hits_context && citation.hits_context.length > 0 && (
                 <details className="mt-1">
                   <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 select-none">
