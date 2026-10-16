@@ -7,6 +7,12 @@ from .entity_gate import (
     resolve_names,
 )
 from .query_filters import QueryFilters
+from .row_gate import (
+    METRIC_TERMS,
+    apply_row_gate,
+    is_lowinfo_row,
+    is_rowlike,
+)
 
 __all__ = [
     "QueryFilters",
@@ -16,4 +22,8 @@ __all__ = [
     "name_matches",
     "code_matches",
     "resolve_names",
+    "apply_row_gate",
+    "is_lowinfo_row",
+    "is_rowlike",
+    "METRIC_TERMS",
 ]

@@ -152,6 +152,13 @@ class RAGConfig:
     """是否启用闭词表简称归一（`三金` → `桂林三金`）；词表优先取**向量库内实际语料**的去重 stockName（与检索集合自洽），
     取不到时降级到 config.EXCEL_METADATA_PATH（个股研报元数据）"""
 
+    ROW_GATE_ENABLED: bool = field(default_factory=lambda: _env("ROW_GATE_ENABLED", "false").lower() == "true")
+    """裸表行闸门（B-59 A）：排除「提到公司但不含指标词」的表格碎片（如 `300181. SZ 佐力药业 0.72 2.73 …`）。
+    **默认关**。背景：全库 86% 的 chunk 不足 200 字，含「公司名+表行数字」的 864 条（1.5%）劫持了 4 道
+    「公司+财务指标」题 top-10 的 36/40（2026-10-16 实测，`docs/评估报告/B-59_精排丢弃4条_人工复核工作单_20261016.md`）"""
+    ROW_GATE_MAX_CHARS: int = field(default_factory=lambda: int(_env("ROW_GATE_MAX_CHARS", "200")))
+    """裸表行闸门的长度上限：超过该长度视为正文，一律保留（默认 200，与 `filters.row_gate.MAX_ROW_CHARS` 一致）"""
+
     TABLE_AGG_TOPK: int = field(default_factory=lambda: int(_env("TABLE_AGG_TOPK", "20")))
     """表聚合作用范围：仅对排序后前 TOPK 条候选中的表格行拉取父表（0=不限制；默认 20 与 Rerank oversample 对齐，避免低相关表格行拖慢首查）"""
 

@@ -29,7 +29,7 @@ from prompts.pipeline import (
 from pipelines.citation_validator import CitationValidator
 from agents.planner import AgentPlanner
 from chains.rag_chain import LangChainRAGChain
-from filters import QueryFilters, apply_entity_gate
+from filters import QueryFilters, apply_entity_gate, apply_row_gate
 from memory import ClarifyStatus, ConversationState, MemoryStore, create_memory_store
 from prompts.fallback import build_suggest_missing, log_fallback as _log_fallback
 from tools.claim_evidence_locator import attach_full_text, locate_claims_per_reference
@@ -1180,6 +1180,15 @@ class RAGPipeline:
 
         # 向量检索（软过滤：不硬过滤，召回后用元数据匹配得分重排，与 query() 保持一致） 
         search_results = self._get_retriever().retrieve(user_input, query_filter=None)
+        # 裸表行闸门（B-59 A，默认关）：先清掉「提到公司但不含指标词」的表格碎片，再做主体硬过滤
+        if getattr(self.config, "ROW_GATE_ENABLED", False):
+            search_results, row_meta = apply_row_gate(
+                search_results,
+                known_names=self._get_stock_vocabulary(),
+                max_chars=getattr(self.config, "ROW_GATE_MAX_CHARS", 200),
+            )
+            if verbose:
+                print(f"[裸表行闸门] 丢弃 {row_meta['dropped']}/{row_meta['n_in']} 条")
         # 实体硬闸门（L5-B，默认关）：与 query() 同一套逻辑（保持候选顺序；命中不足 min_keep 时自动跳过）
         if getattr(self.config, "ENTITY_GATE_ENABLED", False):
             search_results, gate_meta = apply_entity_gate(
@@ -1310,6 +1319,15 @@ class RAGPipeline:
             else:
                 label = ""
             print(f"\n[检索阶段] 召回 {len(search_results)} 个相关片段{label}")
+        # 4a-0. 裸表行闸门（B-59 A，默认关）：排除「提到公司但不含指标词」的表格碎片（如 `300181. SZ 佐力药业 0.72 …`）
+        if getattr(self.config, "ROW_GATE_ENABLED", False):
+            search_results, row_meta = apply_row_gate(
+                search_results,
+                known_names=self._get_stock_vocabulary(),
+                max_chars=getattr(self.config, "ROW_GATE_MAX_CHARS", 200),
+            )
+            if verbose:
+                print(f"[裸表行闸门] 丢弃 {row_meta['dropped']}/{row_meta['n_in']} 条")
         # 4a. 实体硬闸门（L5-B，默认关）：软约束只置换同一集合、无法移除候选（精排吃全部候选且对输入顺序不敏感），
         #     只有硬过滤才能改变最终 top-10；命中不足 min_keep 时自动跳过（多主体/行业题保护）
         if getattr(self.config, "ENTITY_GATE_ENABLED", False):
