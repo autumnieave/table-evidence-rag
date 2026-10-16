@@ -67,6 +67,10 @@ UNIT_ALIASES: Dict[str, str] = {"万": "万元", "亿": "亿元", "百万": "百
 #: 单表切片行数上限：超过则「表头重复 + 每 K 行」切片，保留行列语义
 TABLE_SLICE_ROWS: int = 40
 
+#: 单表切片**字符**上限（硬约束）：嵌入 API（DashScope text-embedding-v2）单条输入 ≤ 2048 token，
+#: 整表 Markdown 会超限（实测最长 13,239 字 / 702 块 > 2048 字）⇒ 切片同时受行数与字符数约束
+TABLE_SLICE_MAX_CHARS: int = 1200
+
 #: 结构化数据内联进 payload 的字符上限（超长时逐步截行；chunk 正文不受影响）
 TABLE_JSON_MAX_CHARS: int = 6000
 
@@ -610,16 +614,52 @@ class Table:
             lines.append("| " + " | ".join(self._escape(c) for c in cells) + " |")
         return "\n".join(lines)
 
-    def to_slices(self, max_rows: int = TABLE_SLICE_ROWS) -> List[str]:
-        """按「表头重复 + 每 K 行」切片；行数不超上限时返回单块。"""
-        if not self.rows:
+    def slice_ranges(
+        self, max_rows: int = TABLE_SLICE_ROWS, max_chars: int = TABLE_SLICE_MAX_CHARS
+    ) -> List[Tuple[int, int]]:
+        """切片的**行区间** ``[(row_start, row_end), ...]``（``rows`` 下标，前闭后开）。
+
+        与 :meth:`to_slices` 同源——**元数据里的 ``row_start`` / ``row_end`` 必须用这里的真实区间**，
+        不能按行数步长估算（字符上限会让每片行数不等，估算会错位）。
+        """
+        total = len(self.rows)
+        if total == 0:
             return []
-        if max_rows <= 0 or len(self.rows) <= max_rows:
-            return [self.to_text()]
-        return [
-            self.to_text(row_start=start, row_end=start + max_rows)
-            for start in range(0, len(self.rows), max_rows)
-        ]
+        row_cap = max_rows if max_rows and max_rows > 0 else total
+        if row_cap >= total and (max_chars <= 0 or len(self.to_text()) <= max_chars):
+            return [(0, total)]
+        out: List[Tuple[int, int]] = []
+        start = 0
+        while start < total:
+            end = min(start + row_cap, total)
+            if max_chars > 0:
+                low, high = start + 1, end
+                while low < high:  # 二分：找「渲染长度 ≤ max_chars」的最大行数
+                    mid = (low + high + 1) // 2
+                    if len(self.to_text(start, mid)) <= max_chars:
+                        low = mid
+                    else:
+                        high = mid - 1
+                end = low
+            out.append((start, end))
+            start = end
+        return out
+
+    def to_slices(
+        self, max_rows: int = TABLE_SLICE_ROWS, max_chars: int = TABLE_SLICE_MAX_CHARS
+    ) -> List[str]:
+        """按「表头重复 + 行数 / 字符数」双上限切片；都不过上限时返回单块。
+
+        Args:
+            max_rows: 单切片行数上限（0 = 不限行数）
+            max_chars: 单切片**渲染后字符数**上限（0 = 不限；默认 :data:`TABLE_SLICE_MAX_CHARS`）
+
+        Note:
+            **字符上限是硬约束**——嵌入 API 单条输入 ≤ 2048 token，整表 Markdown（实测最长 13,239 字）
+            会超限报 400。行数上限保留原设计（切片可读性）。单行自身超限时仍单独成片
+            （**保证每片至少 1 行，不丢行**）。行区间见 :meth:`slice_ranges`。
+        """
+        return [self.to_text(start, end) for start, end in self.slice_ranges(max_rows, max_chars)]
 
     def to_payload(self, max_chars: int = TABLE_JSON_MAX_CHARS) -> Dict[str, Any]:
         """结构化数据的 payload 片段。

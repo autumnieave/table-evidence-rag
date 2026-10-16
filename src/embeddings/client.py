@@ -2,10 +2,30 @@
 import logging
 import time
 import requests
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from config.rag_config import RAGConfig
 
 logger = logging.getLogger(__name__)
+
+
+def cap_embedding_texts(texts: List[str], max_chars: int) -> Tuple[List[str], int]:
+    """嵌入前的**字符兜底**：超过 ``max_chars`` 的文本截断后再送 API，返回 ``(新列表, 截断条数)``。
+
+    DashScope ``text-embedding-v2`` 单条输入上限 2048 token，**一个超长块会让整批 400**
+    （实测结构化口径下有整表块 13,239 字）。正常由分块的 ``TABLE_SLICE_MAX_CHARS`` 保证不触发，
+    这里是**最后一道防线**；**payload 里的正文不受影响**（只影响该点的向量语义，做多长截断见 docstring）。
+    """
+    if max_chars <= 0:
+        return list(texts), 0
+    capped: List[str] = []
+    n_capped = 0
+    for text in texts:
+        if text is not None and len(text) > max_chars:
+            capped.append(text[:max_chars])
+            n_capped += 1
+        else:
+            capped.append(text)
+    return capped, n_capped
 
 class EmbeddingClient:
     """
@@ -80,7 +100,14 @@ class EmbeddingClient:
 
         # 分批处理
         for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
+            batch, n_capped = cap_embedding_texts(
+                texts[i:i + batch_size], getattr(self.config, "EMBEDDING_MAX_CHARS", 0)
+            )
+            if n_capped:
+                logger.warning(
+                    "Embedding 输入超长已截断：%d/%d 条（上限 %d 字符；正文不受影响）",
+                    n_capped, len(batch), self.config.EMBEDDING_MAX_CHARS,
+                )
             batch_embeddings = self._call_embedding_api(batch, text_type)
             all_embeddings.extend(batch_embeddings)
 

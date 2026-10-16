@@ -16,6 +16,7 @@
 用法：
   python -m tools.data_scripts.rebuild_full_index [--collection research_reports_v3_full] [--workers 4] [--force]
   python -m tools.data_scripts.rebuild_full_index --collection research_reports_v3_l5a --chunk-size 1024 --min-chars 200 --force
+  python -m tools.data_scripts.rebuild_full_index --collection research_reports_v3_structured --table-mode structured --strip-boilerplate --workers 4 --force
 """
 from __future__ import annotations
 
@@ -56,9 +57,20 @@ def build_config(collection: str) -> RAGConfig:
 
 
 def build_config_with_split(
-    collection: str, chunk_size: int = 0, chunk_overlap: int = -1, min_chars: int = -1
+    collection: str,
+    chunk_size: int = 0,
+    chunk_overlap: int = -1,
+    min_chars: int = -1,
+    table_mode: str = "legacy",
+    table_slice_rows: int = -1,
+    table_slice_max_chars: int = -1,
+    strip_boilerplate: bool = False,
 ) -> RAGConfig:
-    """构造指向正式数据语料的配置，并可选覆盖分块参数（取配置默认：chunk_size=0 / overlap=-1 / min_chars=-1）"""
+    """构造指向正式数据语料的配置，并可选覆盖分块参数。
+
+    取配置默认：chunk_size=0 / overlap=-1 / min_chars=-1 / table_slice_rows=-1；
+    ``table_mode``（``legacy`` / ``structured``）与 ``strip_boilerplate``（§3.2 锅炉板闸门）直通入库口径。
+    """
     cfg = build_config(collection)
     if chunk_size > 0:
         cfg.CHUNK_SIZE = chunk_size
@@ -66,6 +78,12 @@ def build_config_with_split(
         cfg.CHUNK_OVERLAP = chunk_overlap
     if min_chars >= 0:
         cfg.CHUNK_MIN_CHARS = min_chars
+    cfg.TABLE_CHUNK_MODE = table_mode
+    cfg.BOILERPLATE_STRIP_ENABLED = strip_boilerplate
+    if table_slice_rows > 0:
+        cfg.TABLE_SLICE_ROWS = table_slice_rows
+    if table_slice_max_chars >= 0:
+        cfg.TABLE_SLICE_MAX_CHARS = table_slice_max_chars
     return cfg
 
 
@@ -78,14 +96,37 @@ def main(argv=None) -> int:
     parser.add_argument("--chunk-size", type=int, default=0, help="分块大小（0=取配置默认 1024）")
     parser.add_argument("--chunk-overlap", type=int, default=-1, help="分块重叠字符数（-1=取配置默认；overlap 对比实验用）")
     parser.add_argument("--min-chars", type=int, default=-1, help="文本块最小长度（-1=取配置默认 200；0=关闭碎片合并，L5-A）")
+    parser.add_argument("--table-mode", choices=["legacy", "structured"], default="legacy", help="表格入库口径（structured = 一张表一个/若干 chunk，B-60 重构）")
+    parser.add_argument("--table-slice-rows", type=int, default=-1, help="结构化口径下单表切片行数上限（-1=取配置默认 40）")
+    parser.add_argument("--table-slice-max-chars", type=int, default=-1, help="结构化口径下单表切片字符上限（-1=取配置默认 1200；0=不限）")
+    parser.add_argument("--strip-boilerplate", action="store_true", help="剥离文档尾部声明/签名区（§3.2 锅炉板闸门）")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=[logging.StreamHandler(sys.stdout)])
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-    config = build_config_with_split(args.collection, args.chunk_size, args.chunk_overlap, args.min_chars)
-    logger.info("分块参数：chunk_size=%d, chunk_overlap=%d, min_chars=%d", config.CHUNK_SIZE, config.CHUNK_OVERLAP, config.CHUNK_MIN_CHARS)
+    config = build_config_with_split(
+        args.collection,
+        args.chunk_size,
+        args.chunk_overlap,
+        args.min_chars,
+        table_mode=args.table_mode,
+        table_slice_rows=args.table_slice_rows,
+        table_slice_max_chars=args.table_slice_max_chars,
+        strip_boilerplate=args.strip_boilerplate,
+    )
+    logger.info(
+        "分块参数：chunk_size=%d, chunk_overlap=%d, min_chars=%d, table_mode=%s, strip_boilerplate=%s, "
+        "table_slice_rows=%d, table_slice_max_chars=%d",
+        config.CHUNK_SIZE,
+        config.CHUNK_OVERLAP,
+        config.CHUNK_MIN_CHARS,
+        config.TABLE_CHUNK_MODE,
+        config.BOILERPLATE_STRIP_ENABLED,
+        config.TABLE_SLICE_ROWS,
+        config.TABLE_SLICE_MAX_CHARS,
+    )
     qdrant = QdrantClientWrapper(config)
 
     if qdrant.count() > 0 and not args.force:
@@ -104,8 +145,26 @@ def main(argv=None) -> int:
         logger.error("未加载到任何文档，退出")
         return 1
 
-    chunks = split_documents(all_docs, chunk_size=config.CHUNK_SIZE, chunk_overlap=config.CHUNK_OVERLAP, min_chars=config.CHUNK_MIN_CHARS)
-    logger.info("分块完成：%d 块（耗时 %.1fs）", len(chunks), time.time() - t0)
+    chunks = split_documents(
+        all_docs,
+        chunk_size=config.CHUNK_SIZE,
+        chunk_overlap=config.CHUNK_OVERLAP,
+        min_chars=config.CHUNK_MIN_CHARS,
+        table_mode=config.TABLE_CHUNK_MODE,
+        table_slice_rows=config.TABLE_SLICE_ROWS,
+        table_slice_max_chars=config.TABLE_SLICE_MAX_CHARS,
+        strip_boilerplate=config.BOILERPLATE_STRIP_ENABLED,
+    )
+    n_table = sum(1 for c in chunks if c["metadata"].get("chunk_type") == "table")
+    n_bp = sum(1 for c in chunks if c["metadata"].get("chunk_type") == "boilerplate")
+    logger.info(
+        "分块完成：%d 块（表格 %d / 锅炉板 %d / 正文 %d，耗时 %.1fs）",
+        len(chunks),
+        n_table,
+        n_bp,
+        len(chunks) - n_table - n_bp,
+        time.time() - t0,
+    )
     if not chunks:
         logger.error("分块结果为空，退出")
         return 1

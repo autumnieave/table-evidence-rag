@@ -99,6 +99,10 @@ class RAGConfig:
     """大语言模型名称 (DashScope)"""
     EMBEDDING_MODEL: str = field(default_factory=lambda: _env("EMBEDDING_MODEL", "text-embedding-v2"))
     """向量化模型名称 (DashScope)"""
+    EMBEDDING_MAX_CHARS: int = field(default_factory=lambda: int(_env("EMBEDDING_MAX_CHARS", "2000")))
+    """单条文本**嵌入前**的字符兜底上限（0 = 不限）：超过则截断后再送 API（payload 里的正文不受影响）。
+    这是**兜底**（正常由 `TABLE_SLICE_MAX_CHARS` 保证不触发），防单个超长块让整批 400"""
+
     EMBEDDING_BATCH_SIZE: int = field(default_factory=lambda: int(_env("EMBEDDING_BATCH_SIZE", "10")))
     """Embedding 批处理大小"""
     VECTOR_DIMENSION: int = field(default_factory=lambda: int(_env("VECTOR_DIMENSION", "1536")))
@@ -131,6 +135,17 @@ class RAGConfig:
     """表格入库口径：legacy=一行一个 chunk（现状，线上 v3_full 口径）；structured=一张表一个/若干 chunk（重构，需重建索引）"""
     TABLE_SLICE_ROWS: int = field(default_factory=lambda: int(_env("TABLE_SLICE_ROWS", "40")))
     """结构化口径下单表切片行数上限（超长表按「表头重复 + 每 K 行」切片）"""
+    TABLE_SLICE_MAX_CHARS: int = field(default_factory=lambda: int(_env("TABLE_SLICE_MAX_CHARS", "1200")))
+    """结构化口径下单表切片**字符**上限（0 = 不限）。嵌入 API（DashScope text-embedding-v2）
+    单条输入 ≤ 2048 token，整表 Markdown 会超限（实测 702 块 > 2048 字、最长 13,239 字）⇒ 需切片；
+    **改这里需重建索引**"""
+    BOILERPLATE_STRIP_ENABLED: bool = field(
+        default_factory=lambda: _env("BOILERPLATE_STRIP_ENABLED", "false").lower() == "true"
+    )
+    """锅炉板闸门（§3.2）：true = 入库时剥离文档尾部声明/签名区（`免责声明`/`分析师声明`/`评级标准`…），
+    残余锅炉板块标 `chunk_type = boilerplate` **且检索时不进候选**。
+    实测（473 篇正式语料）可剥离 471 篇 / 845,202 字（占全文 6.28%）；判定见 `src/data/boilerplate.py`。
+    **改这里需重建索引**；默认 false（不动线上 `v3_full` 口径）"""
 
     # ── 检索配置 ─────────────────────────────────────────────────────
     RETRIEVAL_K: int = field(default_factory=lambda: int(_env("RETRIEVAL_K", "50")))

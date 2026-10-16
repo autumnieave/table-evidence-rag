@@ -634,3 +634,97 @@ def test_scan_tables_annotates_section_and_merge():
     assert prose.strip() == ""
     assert len(tables) == 1
     assert tables[0].section_rows == [0]
+
+
+def test_doc_level_fields_reads_stock_and_period():
+    """§3.2：每 chunk 都带主体 / 报告期（文档级字段）。"""
+    from data.splitter import doc_level_fields
+
+    fields = doc_level_fields({
+        "title": "凯莱英2025年三季度报点评：新兴业务维持高增长",
+        "stockCode": "002821",
+        "stockName": "凯莱英",
+    })
+    assert fields["stock_code"] == "002821"
+    assert fields["stock_name"] == "凯莱英"
+    assert fields["report_period"] == "2025Q3"
+    assert fields["doc_type"] == "stock"
+
+
+def test_doc_level_fields_does_not_infer_period_from_publish_year():
+    """标题不含报告类型词时**不猜**报告期（`2024年…行业概览` 的年份是发布年，不是报告期）。"""
+    from data.splitter import doc_level_fields
+
+    fields = doc_level_fields({"title": "2024年中国备案中药材保健食品行业概览", "stockCode": "", "stockName": ""})
+    assert fields["report_period"] is None
+    assert fields["doc_type"] == "industry"
+
+
+def test_structured_prose_chunks_carry_doc_level_metadata():
+    docs = [{
+        "content": "# 投资要点\n\n" + "公司业绩稳健增长，营业收入同比提升。" * 40,
+        "metadata": {
+            "filename": "a.md",
+            "title": "凯莱英2025年三季度报点评：新兴业务维持高增长",
+            "stockCode": "002821",
+            "stockName": "凯莱英",
+        },
+    }]
+    chunks = split_documents(docs, chunk_size=256, chunk_overlap=0, table_mode="structured")
+    assert chunks
+    for chunk in chunks:
+        assert chunk["metadata"]["stock_code"] == "002821"
+        assert chunk["metadata"]["stock_name"] == "凯莱英"
+        assert chunk["metadata"]["report_period"] == "2025Q3"
+        assert chunk["metadata"]["chunk_type"] == "prose"
+
+
+def test_legacy_mode_has_no_doc_level_fields():
+    """legacy 口径逐位复现基线：不得新增 `stock_code` / `doc_type` 等键。"""
+    docs = [{
+        "content": "# 投资要点\n\n" + "公司业绩稳健增长。" * 40,
+        "metadata": {"filename": "a.md", "title": "凯莱英2025年三季度报点评"},
+    }]
+    chunks = split_documents(docs, chunk_size=256, chunk_overlap=0, table_mode="legacy")
+    assert chunks
+    assert all("stock_code" not in c["metadata"] and "chunk_type" not in c["metadata"] for c in chunks)
+
+
+def test_to_slices_respects_char_budget():
+    """**硬约束**：切片渲染长度必须 ≤ 字符上限（嵌入 API 单条 ≤2048 token，整表会超限）。"""
+    rows = [["货币资金", "1,234,567,890.12", "9,876,543,210.98", "同比 +12.34%"] for _ in range(40)]
+    table = build_table(0, "a.md", _grid(["项目", "2024A", "2025E", "同比"], rows))
+    slices = table.to_slices(40, 600)
+    assert len(slices) > 1
+    assert all(len(s) <= 600 for s in slices)
+    # 每片都重复表头，且总行数守恒（不丢行）
+    assert all("| 项目 | 2024A | 2025E | 同比 |" in s for s in slices)
+    assert sum(s.count("货币资金") for s in slices) == 40
+
+
+def test_to_slices_keeps_rows_when_single_row_exceeds_budget():
+    """单行自身超限时**仍单独成片**（保证至少 1 行/片，不丢行）。"""
+    rows = [["超长行", "X" * 900]]
+    table = build_table(0, "a.md", _grid(["项目", "内容"], rows))
+    slices = table.to_slices(40, 300)
+    assert len(slices) == 1
+    assert "X" * 900 in slices[0]
+
+
+def test_to_slices_returns_single_slice_when_small():
+    table = build_table(0, "a.md", _grid(["项目", "值"], [["营业收入", "100"]]))
+    assert len(table.to_slices(40, 1200)) == 1
+
+
+def test_split_documents_structured_table_chunks_stay_within_char_budget():
+    rows = "\n".join("| 营业收入{} | {} |".format(i, "9" * 60) for i in range(60))
+    content = "| 指标 | 数值 |\n| --- | --- |\n" + rows
+    docs = [{"content": content, "metadata": {"filename": "a.md"}}]
+    chunks = split_documents(
+        docs, chunk_size=512, chunk_overlap=0, table_mode="structured",
+        table_slice_rows=40, table_slice_max_chars=600,
+    )
+    tables = [c for c in chunks if c["metadata"]["chunk_type"] == "table"]
+    assert len(tables) > 3
+    assert all(len(c["content"]) <= 600 for c in tables)
+    assert sum(c["metadata"]["row_end"] - c["metadata"]["row_start"] for c in tables) == 60

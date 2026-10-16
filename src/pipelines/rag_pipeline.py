@@ -717,6 +717,8 @@ class RAGPipeline:
             min_chars=self.config.CHUNK_MIN_CHARS,
             table_mode=self.config.TABLE_CHUNK_MODE,
             table_slice_rows=self.config.TABLE_SLICE_ROWS,
+            table_slice_max_chars=getattr(self.config, "TABLE_SLICE_MAX_CHARS", 0),
+            strip_boilerplate=getattr(self.config, "BOILERPLATE_STRIP_ENABLED", False),
         )
         # ----- 为非表格行生成摘要 -----
         non_table_texts = []
@@ -778,6 +780,8 @@ class RAGPipeline:
             min_chars=self.config.CHUNK_MIN_CHARS,
             table_mode=self.config.TABLE_CHUNK_MODE,
             table_slice_rows=self.config.TABLE_SLICE_ROWS,
+            table_slice_max_chars=getattr(self.config, "TABLE_SLICE_MAX_CHARS", 0),
+            strip_boilerplate=getattr(self.config, "BOILERPLATE_STRIP_ENABLED", False),
         )
 
         if not chunks:
@@ -1345,6 +1349,14 @@ class RAGPipeline:
             )
             if verbose:
                 print(f"[实体闸门] {gate_meta['reason']}")
+        # 4a-2. 锅炉板闸门（§3.2，与入库开关同源）：声明/签名区（`chunk_type = boilerplate`）不进候选
+        if getattr(self.config, "BOILERPLATE_STRIP_ENABLED", False):
+            before_bp = len(search_results)
+            search_results = [
+                res for res in search_results if res["payload"].get("chunk_type") != "boilerplate"
+            ]
+            if verbose and before_bp != len(search_results):
+                print(f"[锅炉板闸门] 丢弃 {before_bp - len(search_results)}/{before_bp} 条")
         # 4. 软约束：融合元数据匹配得分，重新排序
         alpha = 0.8  # 向量相似度权重，匹配度权重为 1-alpha
         for res in search_results:

@@ -1,13 +1,38 @@
+import logging
 import re
 import hashlib
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
-from .table_struct import TABLE_SLICE_ROWS, scan_tables
+from .boilerplate import is_boilerplate_block, strip_trailing_boilerplate
+from .table_struct import TABLE_SLICE_MAX_CHARS, TABLE_SLICE_ROWS, extract_report_period, scan_tables
 
 try:
     from langchain_text_splitters import RecursiveCharacterTextSplitter
 except ImportError:
     RecursiveCharacterTextSplitter = None
+
+logger = logging.getLogger(__name__)
+
+#: 标题里必须出现这些词，才从**标题**推报告期（防「2024年中国XX行业概览」被推成 `2024A`）
+REPORT_PERIOD_TITLE_KEYWORDS: Tuple[str, ...] = (
+    "年报", "季报", "半年报", "中报", "一季报", "三季报", "业绩", "财报", "点评",
+)
+
+
+def doc_level_fields(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """文档级主体 / 报告期元数据（§3.2「每 chunk」口径；正文块与表块共用）。
+
+    - ``stock_code`` / ``stock_name``：取自 loader 的 Excel 元数据（``stockCode`` / ``stockName``），行业研报为空；
+    - ``report_period``：**仅当标题含报告类型词**（年报/季报/点评…）时才从标题提取，否则 ``None``
+      （避免把「2024年行业概览」这类发布年份当成报告期）；
+    - ``doc_type``：``stock`` / ``industry``（loader 已给 ``doc_type`` 的行业语料优先）。
+    """
+    title = metadata.get("title") or ""
+    period = extract_report_period(title) if any(k in title for k in REPORT_PERIOD_TITLE_KEYWORDS) else None
+    code = metadata.get("stockCode") or None
+    name = metadata.get("stockName") or None
+    doc_type = metadata.get("doc_type") or ("stock" if code else "industry")
+    return {"stock_code": code, "stock_name": name, "report_period": period, "doc_type": doc_type}
 
 #: 分块最小长度（字符）：过短的相邻文本块会被合并，避免单字/碎片块入库。
 #: 与 config.rag_config 的 CHUNK_MIN_CHARS 默认值保持一致；改这里必须同步改那里（同 overlap 约定）。
@@ -200,6 +225,8 @@ def split_documents(
     min_chars: int = CHUNK_MIN_CHARS,
     table_mode: str = "legacy",
     table_slice_rows: int = TABLE_SLICE_ROWS,
+    table_slice_max_chars: int = TABLE_SLICE_MAX_CHARS,
+    strip_boilerplate: bool = False,
 ) -> List[Dict[str, Any]]:
     """把文档切分为「文本块 + 表格块」两类 chunk。
 
@@ -212,10 +239,14 @@ def split_documents(
         table_mode: 表格入库口径。``"legacy"`` = 一行一个 chunk（现状，线上
             ``research_reports_v3_full`` 口径）；``"structured"`` = 一张表一个 / 若干 chunk（数据管道重构，**需重建索引**）。
         table_slice_rows: 结构化模式下单表切片行数上限（超长表按「表头重复 + 每 K 行」切片）
+        table_slice_max_chars: 结构化模式下单表切片**字符**上限（嵌入 API 单条 ≤ 2048 token，
+            整表 Markdown 会超限；0 = 不限）
+        strip_boilerplate: 锅炉板闸门（§3.2）：剥离文档尾部声明/签名区，残余锅炉板块标
+            ``chunk_type = "boilerplate"``（改动内容口径，**需重建索引**；默认 False）
 
     Returns:
         chunk 列表；``structured`` 模式下每个 chunk 额外带
-        ``chunk_type``（``prose`` / ``table``）与表级元数据
+        ``chunk_type``（``prose`` / ``table`` / ``boilerplate``）与表级元数据
     """
     if RecursiveCharacterTextSplitter is None:
         raise ImportError("langchain_text_splitters is required for split_documents")
@@ -229,10 +260,18 @@ def split_documents(
     all_chunks = []
     seen_hashes = set()
     structured = table_mode == "structured"
+    bp_docs = 0
+    bp_chars = 0
+    total_in_chars = sum(len(d.get("content") or "") for d in documents)
 
     for doc in documents:
         content = doc["content"]
         metadata = doc["metadata"]
+        if strip_boilerplate:
+            content, removed = strip_trailing_boilerplate(content)
+            if removed:
+                bp_docs += 1
+                bp_chars += removed
         filename = metadata.get("filename", "")
         table_chunks = []
 
@@ -246,14 +285,13 @@ def split_documents(
             )
             if text_chunks:
                 text_chunks = merge_short_chunks(text_chunks, min_chars)
+            doc_fields = doc_level_fields(metadata)
             for table in tables:
-                slices = table.to_slices(table_slice_rows)
+                ranges = table.slice_ranges(table_slice_rows, table_slice_max_chars)
                 payload = table.to_payload()
-                step = table_slice_rows if table_slice_rows > 0 else (table.row_count or 1)
                 default_code = table.stock_codes[0] if table.stock_codes else None
-                for slice_index, slice_text in enumerate(slices):
-                    row_start = slice_index * step
-                    row_end = min(row_start + step, table.row_count)
+                for slice_index, (row_start, row_end) in enumerate(ranges):
+                    slice_text = table.to_text(row_start, row_end)
                     extra = dict(payload)
                     extra.update({
                         "is_table_row": True,
@@ -263,12 +301,13 @@ def split_documents(
                         "row_end": row_end,
                         "table_index": table.index,
                         "table_slice_index": slice_index,
-                        "table_slice_total": len(slices),
+                        "table_slice_total": len(ranges),
                         "table_format": table.table_format,
                         "table_parse_ok": table.parse_ok,
                         "stock_code": metadata.get("stockCode") or default_code,
                         "stock_name": metadata.get("stockName") or None,
-                        "report_period": table.report_period,
+                        "report_period": table.report_period or doc_fields["report_period"],
+                        "doc_type": doc_fields["doc_type"],
                         "metric_name": ", ".join(table.metric_names),
                         "metric_names": list(table.metric_names),
                         "unit": table.unit,
@@ -310,7 +349,10 @@ def split_documents(
                 "parent_id": None,
             })
             if structured:
-                chunk_metadata["chunk_type"] = "prose"
+                chunk_metadata.update(doc_level_fields(metadata))
+                chunk_metadata["chunk_type"] = (
+                    "boilerplate" if strip_boilerplate and is_boilerplate_block(chunk_text) else "prose"
+                )
             all_chunks.append({"content": chunk_text, "metadata": chunk_metadata})
         for idx, (chunk_text, extra) in enumerate(table_chunks):
             if not chunk_text:
@@ -330,4 +372,12 @@ def split_documents(
                 chunk_metadata["chunk_type"] = "table"
             all_chunks.append({"content": chunk_text, "metadata": chunk_metadata})
 
+    if strip_boilerplate:
+        logger.info(
+            "锅炉板剥离：%d/%d 篇，%d 字符（占输入 %.2f%%）",
+            bp_docs,
+            len(documents),
+            bp_chars,
+            100.0 * bp_chars / max(1, total_in_chars),
+        )
     return all_chunks
