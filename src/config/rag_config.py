@@ -127,6 +127,10 @@ class RAGConfig:
     """分块重叠大小 (字符数)"""
     CHUNK_MIN_CHARS: int = field(default_factory=lambda: int(_env("CHUNK_MIN_CHARS", "200")))
     """分块最小长度 (字符数)：过短的相邻文本块会被合并，避免单字碎片入库；0 = 关闭（旧行为）。改这里必须同步 src/data/splitter.py 的 CHUNK_MIN_CHARS 并重建索引"""
+    TABLE_CHUNK_MODE: str = field(default_factory=lambda: _env("TABLE_CHUNK_MODE", "legacy"))
+    """表格入库口径：legacy=一行一个 chunk（现状，线上 v3_full 口径）；structured=一张表一个/若干 chunk（重构，需重建索引）"""
+    TABLE_SLICE_ROWS: int = field(default_factory=lambda: int(_env("TABLE_SLICE_ROWS", "40")))
+    """结构化口径下单表切片行数上限（超长表按「表头重复 + 每 K 行」切片）"""
 
     # ── 检索配置 ─────────────────────────────────────────────────────
     RETRIEVAL_K: int = field(default_factory=lambda: int(_env("RETRIEVAL_K", "50")))

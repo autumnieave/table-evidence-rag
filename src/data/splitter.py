@@ -2,6 +2,8 @@ import re
 import hashlib
 from typing import Any, Dict, List
 
+from .table_struct import TABLE_SLICE_ROWS, scan_tables
+
 try:
     from langchain_text_splitters import RecursiveCharacterTextSplitter
 except ImportError:
@@ -191,8 +193,15 @@ def merge_short_chunks(chunks: List[str], min_chars: int = CHUNK_MIN_CHARS) -> L
     return merged
 
 
-def split_documents(documents: List[Dict[str, Any]], chunk_size: int = 1024, chunk_overlap: int = 100, min_chars: int = CHUNK_MIN_CHARS) -> List[Dict[str, Any]]:
-    """把文档切分为「文本块 + 表格行」两类 chunk。
+def split_documents(
+    documents: List[Dict[str, Any]],
+    chunk_size: int = 1024,
+    chunk_overlap: int = 100,
+    min_chars: int = CHUNK_MIN_CHARS,
+    table_mode: str = "legacy",
+    table_slice_rows: int = TABLE_SLICE_ROWS,
+) -> List[Dict[str, Any]]:
+    """把文档切分为「文本块 + 表格块」两类 chunk。
 
     Args:
         documents: 文档列表（每项含 content / metadata，metadata 需带 filename）
@@ -200,6 +209,13 @@ def split_documents(documents: List[Dict[str, Any]], chunk_size: int = 1024, chu
         chunk_overlap: 文本块重叠（字符）
         min_chars: 文本块最小长度，过短的相邻块会被合并（``0`` = 关闭，保持旧行为）；
             表格行不受影响
+        table_mode: 表格入库口径。``"legacy"`` = 一行一个 chunk（现状，线上
+            ``research_reports_v3_full`` 口径）；``"structured"`` = 一张表一个 / 若干 chunk（数据管道重构，**需重建索引**）。
+        table_slice_rows: 结构化模式下单表切片行数上限（超长表按「表头重复 + 每 K 行」切片）
+
+    Returns:
+        chunk 列表；``structured`` 模式下每个 chunk 额外带
+        ``chunk_type``（``prose`` / ``table``）与表级元数据
     """
     if RecursiveCharacterTextSplitter is None:
         raise ImportError("langchain_text_splitters is required for split_documents")
@@ -212,20 +228,72 @@ def split_documents(documents: List[Dict[str, Any]], chunk_size: int = 1024, chu
 
     all_chunks = []
     seen_hashes = set()
+    structured = table_mode == "structured"
 
     for doc in documents:
         content = doc["content"]
         metadata = doc["metadata"]
-        processed_content, table_rows = extract_tables_and_text(content)
-        if processed_content.strip():
-            text_chunks = text_splitter.split_text(processed_content)
-            # L5-A：先合并碎片块再入库（表格行在下方独立处理，不参与合并）
-            text_chunks = merge_short_chunks(text_chunks, min_chars)
+        filename = metadata.get("filename", "")
+        table_chunks = []
+
+        if structured:
+            # 结构化口径：一张表一个 / 若干 chunk；正文剥离表格与占位符（数据管道重构）
+            processed_content, tables = scan_tables(
+                content, source_file=filename, title=metadata.get("title", "")
+            )
+            text_chunks = (
+                text_splitter.split_text(processed_content) if processed_content.strip() else []
+            )
+            if text_chunks:
+                text_chunks = merge_short_chunks(text_chunks, min_chars)
+            for table in tables:
+                slices = table.to_slices(table_slice_rows)
+                payload = table.to_payload()
+                step = table_slice_rows if table_slice_rows > 0 else (table.row_count or 1)
+                default_code = table.stock_codes[0] if table.stock_codes else None
+                for slice_index, slice_text in enumerate(slices):
+                    row_start = slice_index * step
+                    row_end = min(row_start + step, table.row_count)
+                    extra = dict(payload)
+                    extra.update({
+                        "is_table_row": True,
+                        "parent_id": table.table_id,
+                        "row_index": row_start,
+                        "row_start": row_start,
+                        "row_end": row_end,
+                        "table_index": table.index,
+                        "table_slice_index": slice_index,
+                        "table_slice_total": len(slices),
+                        "table_format": table.table_format,
+                        "table_parse_ok": table.parse_ok,
+                        "stock_code": metadata.get("stockCode") or default_code,
+                        "stock_name": metadata.get("stockName") or None,
+                        "report_period": table.report_period,
+                        "metric_name": ", ".join(table.metric_names),
+                        "metric_names": list(table.metric_names),
+                        "unit": table.unit,
+                        "unit_factor": table.unit_factor,
+                    })
+                    table_chunks.append((slice_text, extra))
         else:
-            text_chunks = []
-        parent_id = None
-        if table_rows:
-            parent_id = f"{metadata['filename']}_tables"
+            processed_content, table_rows = extract_tables_and_text(content)
+            if processed_content.strip():
+                text_chunks = text_splitter.split_text(processed_content)
+                # L5-A：先合并碎片块再入库（表格行在下方独立处理，不参与合并）
+                text_chunks = merge_short_chunks(text_chunks, min_chars)
+            else:
+                text_chunks = []
+            if table_rows:
+                parent_id = f"{filename}_tables"
+                for idx, row_text in enumerate(table_rows):
+                    table_chunks.append((row_text, {
+                        "is_table_row": True,
+                        "parent_id": parent_id,
+                        "row_index": idx,
+                    }))
+
+        chunk_total = len(text_chunks) + len(table_chunks)
+
         for idx, chunk_text in enumerate(text_chunks):
             if not chunk_text:
                 continue
@@ -236,28 +304,30 @@ def split_documents(documents: List[Dict[str, Any]], chunk_size: int = 1024, chu
             chunk_metadata = metadata.copy()
             chunk_metadata.update({
                 "chunk_index": idx,
-                "chunk_total": len(text_chunks) + len(table_rows),
+                "chunk_total": chunk_total,
                 "content_hash": content_hash,
                 "is_table_row": False,
                 "parent_id": None,
             })
+            if structured:
+                chunk_metadata["chunk_type"] = "prose"
             all_chunks.append({"content": chunk_text, "metadata": chunk_metadata})
-        for idx, row_text in enumerate(table_rows):
-            if not row_text:
+        for idx, (chunk_text, extra) in enumerate(table_chunks):
+            if not chunk_text:
                 continue
-            content_hash = hashlib.md5(row_text.encode('utf-8')).hexdigest()
+            content_hash = hashlib.md5(chunk_text.encode('utf-8')).hexdigest()
             if content_hash in seen_hashes:
                 continue
             seen_hashes.add(content_hash)
             chunk_metadata = metadata.copy()
             chunk_metadata.update({
                 "chunk_index": len(text_chunks) + idx,
-                "chunk_total": len(text_chunks) + len(table_rows),
+                "chunk_total": chunk_total,
                 "content_hash": content_hash,
-                "is_table_row": True,
-                "parent_id": parent_id,
-                "row_index": idx,
             })
-            all_chunks.append({"content": row_text, "metadata": chunk_metadata})
+            chunk_metadata.update(extra)
+            if structured:
+                chunk_metadata["chunk_type"] = "table"
+            all_chunks.append({"content": chunk_text, "metadata": chunk_metadata})
 
     return all_chunks

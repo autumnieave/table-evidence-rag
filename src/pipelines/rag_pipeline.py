@@ -714,7 +714,9 @@ class RAGPipeline:
             all_docs,
             chunk_size=self.config.CHUNK_SIZE,
             chunk_overlap=self.config.CHUNK_OVERLAP,
-            min_chars=self.config.CHUNK_MIN_CHARS
+            min_chars=self.config.CHUNK_MIN_CHARS,
+            table_mode=self.config.TABLE_CHUNK_MODE,
+            table_slice_rows=self.config.TABLE_SLICE_ROWS,
         )
         # ----- 为非表格行生成摘要 -----
         non_table_texts = []
@@ -773,7 +775,9 @@ class RAGPipeline:
             new_doc_contents,
             chunk_size=self.config.CHUNK_SIZE,
             chunk_overlap=self.config.CHUNK_OVERLAP,
-            min_chars=self.config.CHUNK_MIN_CHARS
+            min_chars=self.config.CHUNK_MIN_CHARS,
+            table_mode=self.config.TABLE_CHUNK_MODE,
+            table_slice_rows=self.config.TABLE_SLICE_ROWS,
         )
 
         if not chunks:

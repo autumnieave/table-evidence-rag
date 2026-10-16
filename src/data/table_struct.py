@@ -1,0 +1,747 @@
+# -*- coding: utf-8 -*-
+"""研报表格结构化（数据管道重构 · 第一步）。
+
+问题
+----
+现状 ``splitter.py`` 把表格按「一行一个 chunk」入库：全库 57,178 个 chunk 中
+**49,913 个（87.5%）是表格行**，平均仅 83.7 字，且只来自 **449 张表**。这些碎片行
+（如 ``300181. SZ  佐力药业  0.72  2.73  3.71``）不含可回答内容，却因「公司名 + 一串数字」
+与「公司 + 指标」类查询词面重合而劫持精排 top-10（B-59 实测 36/40）。
+
+本模块把表格解析为**结构化对象**（:class:`Table`），一张表一个 chunk：
+
+- **解析**：HTML ``<table>``（含 colspan / rowspan）与 Markdown 管道表 → 表头 + 二维行；
+- **序列化**：有表头 → Markdown 表；**2 列键值卡片 → ``键: 值`` 行**（见下）；超长表按
+  「表头重复 + 每 K 行」切片（:data:`TABLE_SLICE_ROWS`）；
+- **元数据**：``table_id`` / ``row_index`` / ``stock_code`` / ``report_period`` /
+  ``metric_name`` / ``unit``，供 L5-B 实体过滤、B-59 A 表行闸门、L1 数值核验共用；
+- **兜底**：解析失败或异常结构保留 ``raw`` 并置 ``parse_ok=False``，**不丢内容**。
+
+语料实测（2026-10-16，473 篇 / 3,343 张表，``训练结果数据/table_struct_smoke/diag.json``）
+------------------------------------------------------------------------------------------
+- **3,343 张表里 0 张带 ``<th>``**（表格由 PDF 解析器生成，表头也是 ``<td>``）；
+- 因此表头只能按结构推断，实测规则为：
+  1. 有 ``<th>`` → 首行即表头；
+  2. 无 ``<th>`` 但首行是**跨满列的单格标题行**（如 ``<td colspan="6">盈利预测与估值</td>``）
+     → 该行移入 ``caption``，**下一行才是表头**；
+  3. 否则 → **首行即表头**（如 ``会计年度 | 2024 | 2025E | …``）；
+  4. **特例：2 列表 = 键值卡片**（``总市值（百万元） | 11,349.65``）——没有表头行，
+     首行就是数据，序列化为 ``键: 值``（若按规则 3 处理会**吃掉首行数据**）。
+- 列数分布（前 120 篇抽样）：2 列 131 张、5/6/7 列 682 张、其余少量。
+
+边界与取舍
+----------
+- ``unit`` 登记为**原始单位标签**（``万元`` / ``亿元`` …）并附 ``unit_factor``（折算为「元」的倍数），
+  **不改写单元格文本**——静默乘数会在 L1 数值核验里制造「对不上的数」。
+- 一张表**混用多种单位**时（键值卡片常见）``unit`` 置 ``None``，不猜。
+- 表格序号（``index``）按「本文档内出现顺序」编列，跨文档不唯一；``table_id`` 才唯一。
+- 纯逻辑、零外部依赖（``bs4`` 可选；缺失时退化为正则解析，不支持 colspan / rowspan）。
+"""
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+try:  # pragma: no cover - 与 B-59 A 共用同一份指标词表，避免两处漂移
+    from filters.row_gate import METRIC_TERMS
+except ImportError:  # pragma: no cover - filters 包不可用时退化为空词表
+    METRIC_TERMS = ()
+
+#: 单位 → 折算为「元」的倍数
+UNIT_TO_YUAN: Dict[str, int] = {
+    "元": 1,
+    "千元": 10 ** 3,
+    "万元": 10 ** 4,
+    "十万元": 10 ** 5,
+    "百万元": 10 ** 6,
+    "千万元": 10 ** 7,
+    "亿元": 10 ** 8,
+    "十亿元": 10 ** 9,
+}
+
+#: 常见简写 → 规范单位名
+UNIT_ALIASES: Dict[str, str] = {"万": "万元", "亿": "亿元", "百万": "百万元", "千": "千元"}
+
+#: 单表切片行数上限：超过则「表头重复 + 每 K 行」切片，保留行列语义
+TABLE_SLICE_ROWS: int = 40
+
+#: 结构化数据内联进 payload 的字符上限（超长时逐步截行；chunk 正文不受影响）
+TABLE_JSON_MAX_CHARS: int = 6000
+
+#: 空表头列的占位名（非首列）
+_COL_PLACEHOLDER = "列{}"
+#: 首列占位名（财务表里首列惯例是「项目 / 指标」这类标签列）
+_ROW_LABEL_PLACEHOLDER = "项目"
+#: 键值卡片的行内分隔符（2 列表）
+_KV_SEPARATOR = ": "
+
+#: ``300181.SZ`` / ``300181 . SZ``
+_CODE_DOT_RE = re.compile(r"(?<!\d)(\d{6})\s*[.·。]?\s*(SZ|SH|BJ)(?![A-Za-z])", re.IGNORECASE)
+#: ``SZ300181`` / ``SH. 600519``
+_CODE_PRE_RE = re.compile(r"(SZ|SH|BJ)\s*[.·。]?\s*(\d{6})(?!\d)", re.IGNORECASE)
+
+_QUARTER_RE = re.compile(r"(20\d{2})\s*[Qq]([1-4])")
+_CN_QUARTER_RE = re.compile(r"(20\d{2})\s*年?\s*(?:第)?([一二三四1234])\s*季度")
+_HALF_RE = re.compile(r"(20\d{2})\s*[Hh]([12])(?![0-9])")
+_HALF_CN_RE = re.compile(r"(20\d{2})\s*年?\s*(?:中报|半年报|上半年)")
+_Q1_CN_RE = re.compile(r"(20\d{2})\s*年?\s*一季报")
+_ANNUAL_RE = re.compile(r"(20\d{2})\s*年?\s*(?:年度|年报|全年)")
+_YEAR_CN_RE = re.compile(r"(20\d{2})\s*年")
+
+_CJK_DIGIT: Dict[str, str] = {"一": "1", "二": "2", "三": "3", "四": "4"}
+
+#: 带括号的单位（``（万元）`` / ``(单位:亿元)``）；``（元/股）`` 这类复合单位不命中
+_UNIT_PAREN_RE = re.compile(
+    r"[（(【\[]\s*(?:单位\s*[:：]?)?\s*(十亿元|千万吨|千万元|百万元|十万元|千元|万元|亿元|万|亿|元)\s*[)）】\]]"
+)
+#: ``单位：万元`` 这类显式标注
+_UNIT_LABEL_RE = re.compile(r"单位\s*[:：]\s*(十亿元|千万元|百万元|十万元|千元|万元|亿元|万|亿|元)")
+
+#: 表标题行（如「表1：2025Q3 主要财务指标」「图表 3 可比公司估值」）
+_CAPTION_RE = re.compile(r"^\s*(?:表|图表|图)\s*[0-9一二三四五六七八九十]+\s*[:：.、]?\s*\S")
+#: 表格来源 / 注释行（并入 caption，从正文剥离）
+_NOTE_RE = re.compile(r"^\s*(?:资料来源|数据来源|注|来源)\s*[:：]")
+
+
+def _clean_cell(text: str) -> str:
+    """单元格文本归一：去零宽字符、折叠空白、去首尾。"""
+    s = (text or "").replace("\u00a0", " ").replace("\u200b", "").replace("\ufeff", "")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def header_placeholder(index: int) -> str:
+    """空表头列的占位名：首列用「项目」（标签列惯例），其余用「列N」。"""
+    return _ROW_LABEL_PLACEHOLDER if index == 0 else _COL_PLACEHOLDER.format(index + 1)
+
+
+def normalize_unit(label: Optional[str]) -> Optional[str]:
+    """单位写法归一为规范标签（``万`` → ``万元``，``亿`` → ``亿元``）；无法识别返回 ``None``。"""
+    if not label:
+        return None
+    key = _clean_cell(label).replace(" ", "")
+    if key in UNIT_TO_YUAN:
+        return key
+    return UNIT_ALIASES.get(key)
+
+
+def unit_factor(label: Optional[str]) -> int:
+    """单位折算为「元」的倍数；无法识别时返回 ``1``。"""
+    normalized = normalize_unit(label)
+    return UNIT_TO_YUAN.get(normalized, 1) if normalized else 1
+
+
+def detect_unit(text: str) -> Tuple[Optional[str], int]:
+    """从标题 / 表头里识别单位，返回 ``(规范单位, 折算为元的倍数)``；识别不到返回 ``(None, 1)``。"""
+    if not text:
+        return None, 1
+    match = _UNIT_PAREN_RE.search(text) or _UNIT_LABEL_RE.search(text)
+    if not match:
+        return None, 1
+    normalized = normalize_unit(match.group(1))
+    if normalized is None:
+        return None, 1
+    return normalized, UNIT_TO_YUAN.get(normalized, 1)
+
+
+def detect_units(text: str, limit: int = 5) -> List[str]:
+    """列出文本里出现的全部单位（去重、保持顺序），用于判断「一张表是否混用多单位」。"""
+    if not text:
+        return []
+    out: List[str] = []
+    for pattern in (_UNIT_PAREN_RE, _UNIT_LABEL_RE):
+        for match in pattern.finditer(text):
+            label = normalize_unit(match.group(1))
+            if label and label not in out:
+                out.append(label)
+                if len(out) >= limit:
+                    return out
+    return out
+
+
+def extract_stock_codes(text: str, limit: int = 20) -> List[str]:
+    """抽取证券代码并统一为 ``300181.SZ``；去重、保持出现顺序。"""
+    if not text:
+        return []
+    found: List[str] = []
+    for match in _CODE_DOT_RE.finditer(text):
+        code = "{}.{}".format(match.group(1), match.group(2).upper())
+        if code not in found:
+            found.append(code)
+        if len(found) >= limit:
+            return found
+    for match in _CODE_PRE_RE.finditer(text):
+        code = "{}.{}".format(match.group(2), match.group(1).upper())
+        if code not in found:
+            found.append(code)
+        if len(found) >= limit:
+            break
+    return found
+
+
+def extract_report_period(text: str) -> Optional[str]:
+    """识别报告期，返回规范写法 ``2025Q3`` / ``2025H1`` / ``2024A``（``A`` = 年报/全年）。"""
+    if not text:
+        return None
+    match = _QUARTER_RE.search(text)
+    if match:
+        return "{}Q{}".format(match.group(1), match.group(2))
+    match = _CN_QUARTER_RE.search(text)
+    if match:
+        digit = _CJK_DIGIT.get(match.group(2), match.group(2))
+        return "{}Q{}".format(match.group(1), digit)
+    match = _HALF_RE.search(text)
+    if match:
+        return "{}H{}".format(match.group(1), match.group(2))
+    match = _HALF_CN_RE.search(text)
+    if match:
+        return "{}H1".format(match.group(1))
+    match = _Q1_CN_RE.search(text)
+    if match:
+        return "{}Q1".format(match.group(1))
+    match = _ANNUAL_RE.search(text)
+    if match:
+        return "{}A".format(match.group(1))
+    match = _YEAR_CN_RE.search(text)
+    if match:
+        return "{}A".format(match.group(1))
+    return None
+
+
+def extract_metric_names(headers: Sequence[str], limit: int = 20) -> List[str]:
+    """从表头 / 首列里挑出指标名（含 :data:`METRIC_TERMS` 任一即算），保持顺序、去重。"""
+    out: List[str] = []
+    for header in headers or []:
+        text = _clean_cell(header)
+        if text and any(term in text for term in METRIC_TERMS) and text not in out:
+            out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+@dataclass
+class TableGrid:
+    """解析出的表格网格 + 表头判定（:func:`parse_html_table_grid` / :func:`parse_markdown_table_grid` 的返回）。"""
+
+    headers: List[str] = field(default_factory=list)
+    rows: List[List[str]] = field(default_factory=list)
+    caption: str = ""
+    has_header: bool = True
+    """``headers`` 是否来自真实表头行；``False`` 表示用的是「项目 / 列N」占位名。"""
+    is_key_value: bool = False
+    """2 列键值卡片（如 ``总市值（百万元） | 11,349.65``）：**没有表头行**，按 ``键: 值`` 序列化。"""
+
+    @property
+    def col_count(self) -> int:
+        """列数。"""
+        return len(self.headers)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """调试 / 落盘用的字典视图。"""
+        return {
+            "caption": self.caption,
+            "has_header": self.has_header,
+            "is_key_value": self.is_key_value,
+            "headers": list(self.headers),
+            "rows": [list(row) for row in self.rows],
+        }
+
+
+def _fit_cells(cells: List[str], width: int) -> List[str]:
+    """把一行单元格补齐 / 截断到 ``width`` 列。"""
+    row = list(cells[:width])
+    if len(row) < width:
+        row.extend([""] * (width - len(row)))
+    return row
+
+
+def _is_md_row(line: str) -> bool:
+    """判断一行是否为 Markdown 管道表行（``| a | b |``）。"""
+    stripped = (line or "").strip()
+    return len(stripped) >= 2 and stripped.startswith("|") and stripped.endswith("|")
+
+
+def _split_md_row(line: str) -> List[str]:
+    """拆 Markdown 表行；支持 ``\\|`` 转义。"""
+    s = (line or "").strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    parts = re.split(r"(?<!\\)\|", s)
+    return [_clean_cell(p.replace("\\|", "|")) for p in parts]
+
+
+def _is_md_separator(line: str) -> bool:
+    """判断是否为 Markdown 表头分隔行（``| --- | :--: |``）。"""
+    s = (line or "").strip()
+    if not s:
+        return False
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    cells = [c.strip() for c in s.split("|")]
+    if not cells:
+        return False
+    meaningful = [c for c in cells if c != ""]
+    if not meaningful:
+        return False
+    return all(re.fullmatch(r":?-{2,}:?", c) for c in meaningful) and len(meaningful) == len(cells)
+
+
+def _pop_span_title_row(grid: List[List[str]]) -> Tuple[str, List[List[str]]]:
+    """剥掉「跨满列的单格标题行」（``<td colspan=6>盈利预测与估值</td>``）。
+
+    返回 ``(标题, 剩余行)``；标题行可连续多行（如「表 3-A」+「盈利预测」）。
+    仅在列数 ≥3 时判定，避免把 2 列卡片里内容雷同的数据行误当标题。
+    """
+    titles: List[str] = []
+    rows = grid
+    while len(rows) >= 2:
+        first = rows[0]
+        nonempty = [cell for cell in first if cell]
+        if len(first) >= 3 and len(nonempty) >= 2 and len(set(nonempty)) == 1:
+            titles.append(nonempty[0])
+            rows = rows[1:]
+            continue
+        break
+    return " ".join(titles), rows
+
+
+def _finalize_grid(grid: List[List[str]], caption: str = "", has_th: bool = False) -> Optional[TableGrid]:
+    """把二维网格收敛为 :class:`TableGrid`（统一补齐列宽 + 推断表头）。
+
+    判定顺序见模块 docstring「语料实测」一节。
+    """
+    if not grid:
+        return None
+    width = max(len(row) for row in grid)
+    if width <= 0:
+        return None
+    grid = [_fit_cells(row, width) for row in grid if any(row)]
+    if not grid:
+        return None
+
+    if has_th:
+        if len(grid) < 2:
+            return None
+        return TableGrid(
+            headers=[_clean_cell(c) or header_placeholder(i) for i, c in enumerate(grid[0])],
+            rows=grid[1:],
+            caption=caption,
+            has_header=True,
+        )
+
+    title, grid = _pop_span_title_row(grid)
+    caption = " ".join(part for part in (caption, title) if part).strip()
+
+    if width <= 2:  # 键值卡片：首行就是数据，不能当表头
+        if not grid:
+            return None
+        return TableGrid(
+            headers=[header_placeholder(i) for i in range(width)],
+            rows=grid,
+            caption=caption,
+            has_header=False,
+            is_key_value=width == 2,
+        )
+
+    if len(grid) >= 2:
+        header_row = grid[0]
+        nonempty = [cell for cell in header_row if cell]
+        if len(nonempty) >= 2:  # 首行是表头（「会计年度 | 2024 | 2025E | …」）
+            return TableGrid(
+                headers=[_clean_cell(c) or header_placeholder(i) for i, c in enumerate(header_row)],
+                rows=grid[1:],
+                caption=caption,
+                has_header=True,
+            )
+
+    return TableGrid(
+        headers=[header_placeholder(i) for i in range(width)],
+        rows=grid,
+        caption=caption,
+        has_header=False,
+    )
+
+
+def parse_markdown_table_grid(lines: Sequence[str]) -> Optional[TableGrid]:
+    """解析 Markdown 管道表为 :class:`TableGrid`；不可解析返回 ``None``。
+
+    - 第 2 行是分隔行 → 第 1 行作表头、第 3 行起为数据；
+    - 无分隔行 → 第 1 行作表头、第 2 行起为数据；
+    - 单元格数不齐的行按表头列数补齐 / 截断；
+    - 无数据行时返回 ``None``（调用方应保留原文，避免丢内容）。
+    """
+    lines = [ln for ln in (lines or []) if _is_md_row(ln)]
+    if len(lines) < 2:
+        return None
+    headers = _split_md_row(lines[0])
+    if not headers or not any(headers):
+        return None
+    data_lines = lines[2:] if _is_md_separator(lines[1]) else lines[1:]
+    rows: List[List[str]] = []
+    for line in data_lines:
+        cells = _split_md_row(line)
+        if not any(cells):
+            continue
+        rows.append(_fit_cells(cells, len(headers)))
+    if not rows:
+        return None
+    return TableGrid(headers=list(headers), rows=rows, caption="", has_header=True)
+
+
+def _parse_html_table_grid_regex(html_table: str) -> Optional[TableGrid]:
+    """无 bs4 时的兜底 HTML 解析（不支持 colspan / rowspan）。"""
+    row_pattern = re.compile(r"<tr[^>]*>(.*?)</tr>", re.DOTALL | re.IGNORECASE)
+    cell_pattern = re.compile(r"<t[dh][^>]*>(.*?)</t[dh]>", re.DOTALL | re.IGNORECASE)
+    tag_pattern = re.compile(r"<[^>]+>")
+    trs = row_pattern.findall(html_table or "")
+    grid: List[List[str]] = []
+    has_th = False
+    for tr in trs:
+        if re.search(r"<th[^>]*>", tr, re.IGNORECASE):
+            has_th = True
+        cells = [_clean_cell(tag_pattern.sub(" ", cell)) for cell in cell_pattern.findall(tr)]
+        if any(cells):
+            grid.append(cells)
+    return _finalize_grid(grid, has_th=has_th)
+
+
+def parse_html_table_grid(html_table: str) -> Optional[TableGrid]:
+    """解析 HTML 表格为 :class:`TableGrid`；不可解析返回 ``None``。
+
+    - ``colspan``：按列数复制该单元格文本占位；``rowspan``：向后续行填充；
+    - 表头判定（语料实测，见模块 docstring）：``<th>`` → 首行即表头；
+      **跨满列的单格标题行** → 移入 ``caption``，下一行作表头；
+      **2 列 → 键值卡片（无表头）**；其余 → 首行即表头；
+    - 解析不出数据行时返回 ``None``（调用方应保留原文）。
+    """
+    if not (html_table or "").strip():
+        return None
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return _parse_html_table_grid_regex(html_table)
+
+    soup = BeautifulSoup(html_table, "html.parser")
+    table = soup.find("table")
+    if table is None:
+        return _parse_html_table_grid_regex(html_table)
+
+    grid: List[List[str]] = []
+    pending: Dict[int, List[Any]] = {}  # 列号 -> [文本, 还需向下填充的行数]
+    has_th = False
+
+    for tr in table.find_all("tr"):
+        cells = tr.find_all(["th", "td"])
+        if not cells:
+            continue
+        if any(cell.name == "th" for cell in cells):
+            has_th = True
+        row: List[str] = []
+        col = 0
+        for cell in cells:
+            while col in pending:  # 先补齐上方 rowspan 遗留
+                text, left = pending[col][0], pending[col][1]
+                row.append(text)
+                if left <= 1:
+                    pending.pop(col, None)
+                else:
+                    pending[col][1] = left - 1
+                col += 1
+            text = _clean_cell(cell.get_text(" ", strip=True))
+            try:
+                colspan = max(1, int(cell.get("colspan") or 1))
+            except (TypeError, ValueError):
+                colspan = 1
+            try:
+                rowspan = max(1, int(cell.get("rowspan") or 1))
+            except (TypeError, ValueError):
+                rowspan = 1
+            for offset in range(colspan):
+                row.append(text)
+                if rowspan > 1:
+                    pending[col + offset] = [text, rowspan - 1]
+                col += 1
+        while col in pending:  # 行尾再补一次
+            text, left = pending[col][0], pending[col][1]
+            row.append(text)
+            if left <= 1:
+                pending.pop(col, None)
+            else:
+                pending[col][1] = left - 1
+            col += 1
+        if any(row):
+            grid.append(row)
+
+    return _finalize_grid(grid, has_th=has_th)
+
+@dataclass
+class Table:
+    """一张结构化表格（结构化集合里「一张表 = 一个 / 若干 chunk」的来源）。"""
+
+    table_id: str
+    source_file: str = ""
+    index: int = 0
+    title: str = ""
+    """所属研报标题（作为 chunk 正文的上下文前缀；不是表标题）。"""
+    caption: str = ""
+    """表标题（来自 colspan 标题行 / 「表N：…」行 / 资料来源注释行）。"""
+    headers: List[str] = field(default_factory=list)
+    rows: List[List[str]] = field(default_factory=list)
+    has_header: bool = True
+    """``headers`` 是否来自真实表头行（``False`` = 「项目 / 列N」占位名）。"""
+    is_key_value: bool = False
+    """2 列键值卡片：无表头行，按 ``键: 值`` 序列化。"""
+    unit: Optional[str] = None
+    unit_factor: int = 1
+    unit_candidates: List[str] = field(default_factory=list)
+    """表内出现过的全部单位；**恰好 1 个**时才写进 ``unit``，多单位置 ``None``。"""
+    stock_codes: List[str] = field(default_factory=list)
+    report_period: Optional[str] = None
+    metric_names: List[str] = field(default_factory=list)
+    table_format: str = "markdown"
+    parse_ok: bool = True
+    raw: str = ""
+
+    @property
+    def row_count(self) -> int:
+        """数据行数（不含表头）。"""
+        return len(self.rows)
+
+    @property
+    def col_count(self) -> int:
+        """列数。"""
+        return len(self.headers)
+
+    def caption_text(self) -> str:
+        """chunk 正文的标题行：表标题 + 研报标题（上下文）+ 单位标注。"""
+        parts: List[str] = []
+        for text in (_clean_cell(self.caption), _clean_cell(self.title)):
+            if text and text not in parts:
+                parts.append(text)
+        head = " ".join(parts)
+        if self.unit and self.unit not in head:
+            head = "{}\uff08\u5355\u4f4d\uff1a{}\uff09".format(head, self.unit)
+        return head
+
+    @staticmethod
+    def _escape(text: str) -> str:
+        """Markdown 单元格转义（竖线会破坏表结构）。"""
+        return _clean_cell(text).replace("|", "\\|")
+
+    def to_text(self, row_start: int = 0, row_end: Optional[int] = None) -> str:
+        """序列化为 chunk 正文。
+
+        - 键值卡片（``is_key_value``）→ 每行 ``键: 值``；
+        - 有表头 → Markdown 表（表头 + 分隔行 + 数据行）；
+        - 无表头且非卡片 → Markdown 数据行（不造假的表头行）。
+        """
+        lines: List[str] = []
+        head = self.caption_text()
+        if head:
+            lines.append(head)
+        rows = self.rows[row_start:row_end]
+        if self.is_key_value:
+            for row in rows:
+                cells = _fit_cells(list(row), 2)
+                value = cells[1].strip()
+                lines.append("{}: {}".format(cells[0], value) if value else cells[0])
+            return "\n".join(lines)
+        if self.has_header and self.headers:
+            lines.append("| " + " | ".join(self._escape(h) for h in self.headers) + " |")
+            lines.append("| " + " | ".join("---" for _ in self.headers) + " |")
+        for row in rows:
+            cells = _fit_cells([_clean_cell(c) for c in row], max(1, self.col_count))
+            lines.append("| " + " | ".join(self._escape(c) for c in cells) + " |")
+        return "\n".join(lines)
+
+    def to_slices(self, max_rows: int = TABLE_SLICE_ROWS) -> List[str]:
+        """按「表头重复 + 每 K 行」切片；行数不超上限时返回单块。"""
+        if not self.rows:
+            return []
+        if max_rows <= 0 or len(self.rows) <= max_rows:
+            return [self.to_text()]
+        return [
+            self.to_text(row_start=start, row_end=start + max_rows)
+            for start in range(0, len(self.rows), max_rows)
+        ]
+
+    def to_payload(self, max_chars: int = TABLE_JSON_MAX_CHARS) -> Dict[str, Any]:
+        """结构化数据的 payload 片段。
+
+        ``table_json`` 是 ``{"headers": [...], "rows": [[...]]}`` 的 JSON 字符串；
+        超过 ``max_chars`` 时逐步截行并置 ``table_truncated=True``（**chunk 正文不受影响**）。
+        """
+        rows = [list(row) for row in self.rows]
+        truncated = False
+        blob = ""
+        while True:
+            blob = json.dumps({"headers": self.headers, "rows": rows}, ensure_ascii=False)
+            if len(blob) <= max_chars:
+                break
+            if len(rows) <= 1:  # 无法再截，保留最后一行并打标
+                truncated = True
+                break
+            keep = int(len(rows) * max_chars / len(blob)) - 1
+            keep = min(max(1, keep), len(rows) - 1)
+            rows = rows[:keep]
+            truncated = True
+        return {
+            "table_id": self.table_id,
+            "table_json": blob,
+            "table_truncated": truncated,
+            "table_row_count": self.row_count,
+            "table_col_count": self.col_count,
+            "table_has_header": self.has_header,
+            "table_is_key_value": self.is_key_value,
+        }
+
+
+def build_table(
+    index: int,
+    source_file: str,
+    grid: TableGrid,
+    title: str = "",
+    caption: str = "",
+    table_format: str = "markdown",
+    parse_ok: bool = True,
+    raw: str = "",
+) -> Table:
+    """由 :class:`TableGrid` 构造 :class:`Table`，并推断单位 / 主体 / 报告期 / 指标列。
+
+    元数据抽取**分两级**：先看「表标题 / 研报标题 / 表头」，取不到再退回「首列 / 前 20 行」——
+    语料里指标名通常写在**首列**（``营业收入(百万元)``），而不是列头（列头是年份）。
+    """
+    headers = [
+        _clean_cell(header) or header_placeholder(i) for i, header in enumerate(grid.headers or [])
+    ]
+    width = max(1, len(headers))
+    rows = [[_clean_cell(cell) for cell in _fit_cells(list(row), width)] for row in (grid.rows or [])]
+    title_text = _clean_cell(title)
+    caption_text = " ".join(
+        part for part in (_clean_cell(caption), _clean_cell(grid.caption)) if part
+    )
+    head_text = " ".join(
+        part
+        for part in (caption_text, title_text, " ".join(headers) if grid.has_header else "")
+        if part
+    )
+    first_column = " ".join(row[0] for row in rows[:40] if row and row[0])
+    body_text = " ".join(" ".join(row) for row in rows[:20])
+
+    candidates = detect_units(head_text) or detect_units(first_column)
+    unit = candidates[0] if len(candidates) == 1 else None
+    factor = UNIT_TO_YUAN.get(unit, 1) if unit else 1
+
+    period = (
+        extract_report_period(head_text)
+        or extract_report_period(first_column)
+        or extract_report_period(body_text)
+    )
+    codes = (
+        extract_stock_codes(head_text)
+        or extract_stock_codes(first_column)
+        or extract_stock_codes(body_text)
+    )
+    metric_names = extract_metric_names(headers)
+    for name in extract_metric_names([row[0] for row in rows[:40] if row]):
+        if name not in metric_names:
+            metric_names.append(name)
+
+    return Table(
+        table_id="{}#t{}".format(source_file or "unknown", index + 1),
+        source_file=source_file,
+        index=index,
+        title=title_text,
+        caption=caption_text,
+        headers=headers,
+        rows=rows,
+        has_header=grid.has_header,
+        is_key_value=grid.is_key_value,
+        unit=unit,
+        unit_factor=factor,
+        unit_candidates=candidates,
+        stock_codes=codes,
+        report_period=period,
+        metric_names=metric_names,
+        table_format=table_format,
+        parse_ok=parse_ok,
+        raw=raw,
+    )
+
+
+_HTML_TABLE_RE = re.compile(r"<table\b.*?</table>", re.DOTALL | re.IGNORECASE)
+_PLACEHOLDER_RE = re.compile(r"^[ \t]*\[TABLE_PLACEHOLDER_\d+\][ \t]*$", re.MULTILINE)
+
+
+def scan_tables(content: str, source_file: str = "", title: str = "") -> Tuple[str, List[Table]]:
+    """扫描正文，抽出全部表格，返回 ``(剥离表格后的正文, Table 列表)``。
+
+    规则：
+
+    - HTML 表格解析成功 → 从正文删除；**解析失败 → 原样保留**（宁可留噪声，不丢内容）；
+    - Markdown 管道表 → 抽为 :class:`Table`；紧邻的「表N：…」标题行与
+      「资料来源：…」注释行（最多 3 行）并入 ``caption``，并从正文删除；
+    - ``[TABLE_PLACEHOLDER_*]`` 一律剥离（结构化后表格自成 chunk，不再需要占位符）。
+    """
+    tables: List[Table] = []
+    text = content or ""
+
+    def _html_sub(match: "re.Match[str]") -> str:
+        grid = parse_html_table_grid(match.group(0))
+        if grid is None:
+            return match.group(0)
+        tables.append(
+            build_table(
+                len(tables), source_file, grid, title=title, table_format="html",
+                raw=match.group(0),
+            )
+        )
+        return "\n"
+
+    text = _HTML_TABLE_RE.sub(_html_sub, text)
+
+    lines = text.split("\n")
+    out: List[str] = []
+    i = 0
+    while i < len(lines):
+        if not _is_md_row(lines[i]):
+            out.append(lines[i])
+            i += 1
+            continue
+        j = i
+        while j < len(lines) and _is_md_row(lines[j]):
+            j += 1
+        block = lines[i:j]
+        grid = parse_markdown_table_grid(block)
+        if grid is None:
+            out.extend(block)
+            i = j
+            continue
+        caption = ""
+        if out and _CAPTION_RE.match(out[-1].strip()):
+            caption = out.pop().strip()
+        notes: List[str] = []
+        k = j
+        while k < len(lines) and len(notes) < 3 and _NOTE_RE.match(lines[k].strip()):
+            notes.append(lines[k].strip())
+            k += 1
+        if notes:
+            caption = " ".join(part for part in (caption, " ".join(notes)) if part)
+            j = k
+        tables.append(
+            build_table(
+                len(tables), source_file, grid, title=title, caption=caption,
+                table_format="markdown", raw="\n".join(block),
+            )
+        )
+        out.append("")
+        i = j
+
+    prose = _PLACEHOLDER_RE.sub("", "\n".join(out))
+    prose = re.sub(r"[ \t]*\n{3,}[ \t]*", "\n\n", prose)
+    return prose, tables
