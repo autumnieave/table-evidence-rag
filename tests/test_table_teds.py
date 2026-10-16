@@ -4,15 +4,21 @@ import copy
 
 import pytest
 
+from data.table_struct import Table
 from tools.data_scripts.table_teds import (
+    STRUCTURE_DIMENSIONS,
     cell_similarity,
+    f1_similarity,
     gold_cells_missing_in_raw,
     pair_similarity,
     parse_number,
     row_cell_cost,
     sequence_cost,
     stack_rows,
+    structure_similarity,
+    table_to_structure_view,
     teds,
+    view_cols,
 )
 
 GOLD = {
@@ -163,3 +169,93 @@ def test_gold_check_skips_placeholder_header_when_no_header():
 @pytest.mark.parametrize("score_check", [lambda s: 0.0 <= s <= 1.0])
 def test_score_range(score_check):
     assert score_check(teds(GOLD, _pred()))
+
+# ---------------------------------------------------------------- 结构分（语义维度）
+
+STRUCT = {
+    "section_rows": [0, 26],
+    "sub_header_rows": [3],
+    "merged_cells": [{"row": 0, "col": 0, "rowspan": 7, "colspan": 1}],
+}
+
+
+def _struct(**overrides):
+    view = copy.deepcopy(STRUCT)
+    view.update(overrides)
+    return view
+
+
+def test_f1_similarity_empty_vs_empty_is_one():
+    """两边都没有分节行 = 这张表本来就没有，算对。"""
+    assert f1_similarity(set(), set()) == 1.0
+
+
+def test_f1_similarity_bounds():
+    assert f1_similarity({1}, {1}) == 1.0
+    assert f1_similarity({1}, {2}) == 0.0
+    assert f1_similarity({1, 2}, {1}) == pytest.approx(2 / 3)
+
+
+def test_structure_similarity_identical_is_one():
+    parts = structure_similarity(STRUCT, _struct())
+    assert parts["structure_score"] == 1.0
+    assert all(parts[d] == 1.0 for d in STRUCTURE_DIMENSIONS)
+
+
+def test_structure_score_drops_when_section_rows_lost():
+    """**注入破坏**：解析器丢掉分节行 → 结构分必须掉下来（证明指标不是恒 1 的装饰）。"""
+    parts = structure_similarity(STRUCT, _struct(section_rows=[]))
+    assert parts["section_rows"] == 0.0
+    assert parts["sub_header_rows"] == 1.0 and parts["merged_cells"] == 1.0
+    assert parts["structure_score"] == pytest.approx(2 / 3)
+    assert parts["structure_score"] < 1.0
+
+
+def test_structure_score_drops_when_extra_section_rows_added():
+    parts = structure_similarity(STRUCT, _struct(section_rows=[0, 26, 40]))
+    assert parts["section_rows"] == pytest.approx(2 * (2 / 3) * 1.0 / ((2 / 3) + 1.0))
+    assert parts["structure_score"] < 1.0
+
+
+def test_structure_score_drops_when_merged_geometry_wrong():
+    """行/列/rowspan/colspan 任一维错都算不一致。"""
+    parts = structure_similarity(
+        STRUCT, _struct(merged_cells=[{"row": 0, "col": 1, "rowspan": 7, "colspan": 1}])
+    )
+    assert parts["merged_cells"] == 0.0
+    assert parts["structure_score"] == pytest.approx(2 / 3)
+
+
+def test_structure_score_drops_when_sub_header_lost():
+    parts = structure_similarity(STRUCT, _struct(sub_header_rows=[]))
+    assert parts["sub_header_rows"] == 0.0
+    assert parts["structure_score"] == pytest.approx(2 / 3)
+
+
+def test_combined_score_penalises_structure_loss_even_when_teds_is_one():
+    """TEDS 满分但结构丢了 → 综合分必须 < 1：这正是加结构分的意义。"""
+    struct = structure_similarity(STRUCT, _struct(section_rows=[]))
+    assert teds(GOLD, _pred()) == 1.0
+    assert teds(GOLD, _pred()) * struct["structure_score"] < 1.0
+
+
+def test_table_to_structure_view_reads_table_fields():
+    table = Table(
+        table_id="a.md#t1",
+        section_rows=[1],
+        sub_header_rows=[2],
+        merged_cells=[{"row": 0, "col": 0, "rowspan": 2, "colspan": 1}],
+    )
+    view = table_to_structure_view(table)
+    assert view["section_rows"] == [1]
+    assert view["sub_header_rows"] == [2]
+    assert view["merged_cells"] == [{"row": 0, "col": 0, "rowspan": 2, "colspan": 1}]
+    assert structure_similarity(view, view)["structure_score"] == 1.0
+
+
+def test_view_cols_uses_rows_width_when_headers_empty():
+    """键值卡片（headers 记空表）的列数须看 rows 宽度，否则报告出「gold 0 列 vs pred N 列」假差异。"""
+    kv_gold = {"headers": [], "rows": [["项目A", "1.0"], ["项目B", "2.0"]], "has_header": False}
+    assert view_cols(kv_gold) == 2
+    assert view_cols({"headers": ["a", "b", "c"], "rows": [["1", "2"]], "has_header": True}) == 3
+    assert view_cols({"headers": [], "rows": []}) == 0

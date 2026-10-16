@@ -20,6 +20,26 @@
 4. **Gold 该格为空、解析结果是空表头占位名**（``项目`` / ``列N``）视为相同（给空表头补占位名是合理归一）。
    另：``has_header = False`` 的表，**表头行不参与比对**（不存在表头行就不该被扣分）。
 
+## 结构分 `structure_score`（语义维度，2026-10-16 追加）
+
+TEDS 只比「扁平文本树」，**看不见语义结构**：一节标题行被展开成重复文本后，TEDS 照样给满分。
+因此另出 `structure_score`，比对 Gold 与解析结果的三个**语义维度**（Gold 侧由
+`训练结果数据/gold_set/annotate_gold_struct.py` 从**源 HTML 事实**推导，与解析器的启发式相互独立）：
+
+| 维度 | 含义 |
+| --- | --- |
+| `section_rows` | 全宽标签行（``利润表`` / ``成长能力`` / ``备注:…``）——**不是数据行** |
+| `sub_header_rows` | 次级表头行（跨子表重复表头 / 多级表头） |
+| `merged_cells` | 合并单元格坐标 ``(row, col, rowspan, colspan)``（``rows`` 坐标） |
+
+每个维度算 **F1**（空集对空集记 1.0），`structure_score` = 三维度**宏平均**。
+`combined = teds × structure_score`：**两个口径都满分才算解析全对**。
+`structure_score` 的判定力由单测保证（把某个维度清空，分数必须掉下来），不是恒等于 1 的装饰指标。
+
+**注意**：Gold 集 10 张表在当前解析器下 `structure_score = 1.0`
+（语义标注与源 HTML 事实逐项一致）；全库层面的客观校验见
+`docs/评估报告/数据管道重构方案_20261016.md` §8.6（`section_rows` precision 98.5% / recall 99.8%）。
+
 **相对标准 TEDS 的简化**：① 只有「表 / 行 / 格」三层，没有 HTML 标签树、没有合并单元格坐标层；
 ② 单元格相似度用字符级 + 数值归一，不做 token/结构感知；③ 树大小按「格数 + 行数 + 1」计。
 因此本分数适合**同一解析器的版本间对比**（相对量），不宣称与论文 TEDS 同值。
@@ -208,6 +228,60 @@ def teds(gold: Dict[str, Any], pred: Dict[str, Any]) -> float:
     return max(0.0, min(1.0, 1.0 - cost / denom))
 
 
+STRUCTURE_DIMENSIONS: Tuple[str, ...] = ("section_rows", "sub_header_rows", "merged_cells")
+
+
+def f1_similarity(gold: set, pred: set) -> float:
+    """两个集合的 F1（两边都空 = 1.0，表示「本来就没有」也是对的）。"""
+    if not gold and not pred:
+        return 1.0
+    tp = len(gold & pred)
+    if tp == 0:
+        return 0.0
+    precision = tp / len(pred)
+    recall = tp / len(gold)
+    return 2 * precision * recall / (precision + recall)
+
+
+def _merge_key(cell: Dict[str, Any]) -> Tuple[Any, ...]:
+    """合并单元格 → 可比较的四元组。"""
+    return (cell.get("row"), cell.get("col"), cell.get("rowspan"), cell.get("colspan"))
+
+
+def structure_similarity(gold: Dict[str, Any], pred: Dict[str, Any]) -> Dict[str, Any]:
+    """三个语义维度的 F1 + 宏平均 ``structure_score``。
+
+    参数为两份**结构标注字典**：``{"section_rows": [...], "sub_header_rows": [...],
+    "merged_cells": [{"row","col","rowspan","colspan"}]}``。
+    """
+    parts: Dict[str, float] = {}
+    parts["section_rows"] = f1_similarity(
+        set(gold.get("section_rows") or []), set(pred.get("section_rows") or [])
+    )
+    parts["sub_header_rows"] = f1_similarity(
+        set(gold.get("sub_header_rows") or []), set(pred.get("sub_header_rows") or [])
+    )
+    parts["merged_cells"] = f1_similarity(
+        {_merge_key(c) for c in (gold.get("merged_cells") or [])},
+        {_merge_key(c) for c in (pred.get("merged_cells") or [])},
+    )
+    parts["structure_score"] = round(
+        sum(parts[d] for d in STRUCTURE_DIMENSIONS) / len(STRUCTURE_DIMENSIONS), 6
+    )
+    for dim in STRUCTURE_DIMENSIONS:
+        parts[dim] = round(parts[dim], 6)
+    return parts
+
+
+def table_to_structure_view(table: Any) -> Dict[str, Any]:
+    """解析结果 → 结构标注字典（与 Gold 的语义维度同构）。"""
+    return {
+        "section_rows": list(table.section_rows),
+        "sub_header_rows": list(table.sub_header_rows),
+        "merged_cells": [dict(c) for c in table.merged_cells],
+    }
+
+
 def raw_plain_text(raw: str, table_format: str = "html") -> str:
     """原文 → 纯文本（去标签 / 折叠空白），用于 Gold 格子可定位校验。"""
     text = raw or ""
@@ -256,6 +330,17 @@ def load_corpus_tables(corpus: Path) -> Dict[str, Any]:
     return tables
 
 
+def view_cols(view: Dict[str, Any]) -> int:
+    """视图的**有效列数**。
+
+    键值卡片（``has_header = False``）的 Gold ``headers`` 是空表，列数要看 ``rows`` 的实际宽度，
+    否则报告里会出现「gold 0 列 vs pred 2 列」的假差异。
+    """
+    widths = [len(row) for row in (view.get("rows") or [])]
+    widths.append(len(view.get("headers") or []))
+    return max(widths) if widths else 0
+
+
 def table_to_gold_view(table: Any) -> Dict[str, Any]:
     """解析结果 → ``{headers, rows}`` 视图。"""
     return {
@@ -284,7 +369,7 @@ def score_gold_set(
             "bucket": entry.get("bucket"),
             "source_file": entry.get("source_file"),
             "gold_rows": len(gold_view["rows"]),
-            "gold_cols": len(gold_view["headers"]),
+            "gold_cols": view_cols(gold_view),
         }
         if table is None:
             record["teds"] = None
@@ -292,9 +377,14 @@ def score_gold_set(
             records.append(record)
             continue
         record["pred_rows"] = table.row_count
-        record["pred_cols"] = table.col_count
+        record["pred_cols"] = view_cols(table_to_gold_view(table))
         record["caption_match"] = clean_text(entry.get("caption", "")) == clean_text(table.caption)
         record["teds"] = round(teds(gold_view, table_to_gold_view(table)), 6)
+        if any(dim in entry for dim in STRUCTURE_DIMENSIONS):
+            structure = structure_similarity(entry, table_to_structure_view(table))
+            record["structure"] = structure
+            record["structure_score"] = structure["structure_score"]
+            record["combined"] = round(float(record["teds"]) * structure["structure_score"], 6)
         missing = gold_cells_missing_in_raw(
             gold_view["headers"],
             gold_view["rows"],
@@ -308,13 +398,27 @@ def score_gold_set(
     return records
 
 
+def _mean(values: List[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
 def build_report(records: List[Dict[str, Any]], gold_path: Path) -> Dict[str, Any]:
-    """汇总报告（含总体 / 分桶平均 TEDS）。"""
+    """汇总报告（含总体 / 分桶平均 TEDS，以及结构分与综合分）。"""
     scored = [r for r in records if isinstance(r.get("teds"), (int, float))]
     buckets: Dict[str, List[float]] = {}
     for record in scored:
         buckets.setdefault(str(record.get("bucket")), []).append(float(record["teds"]))
     avg = sum(float(r["teds"]) for r in scored) / len(scored) if scored else 0.0
+    structured = [r for r in records if isinstance(r.get("structure_score"), (int, float))]
+    struct_buckets: Dict[str, List[float]] = {}
+    for record in structured:
+        struct_buckets.setdefault(str(record.get("bucket")), []).append(float(record["structure_score"]))
+    struct_avg = _mean([float(r["structure_score"]) for r in structured])
+    combined_avg = _mean([float(r["combined"]) for r in structured if isinstance(r.get("combined"), (int, float))])
+    dim_avg = {
+        dim: round(_mean([float(r["structure"][dim]) for r in structured]), 6)
+        for dim in STRUCTURE_DIMENSIONS
+    }
     return {
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "gold_set": str(gold_path),
@@ -326,6 +430,13 @@ def build_report(records: List[Dict[str, Any]], gold_path: Path) -> Dict[str, An
             "gold自检通过数": sum(1 for r in records if r.get("gold_自检_通过")),
             "分桶平均TEDS": {
                 k: round(sum(v) / len(v), 6) for k, v in sorted(buckets.items())
+            },
+            "已打结构分": len(structured),
+            "平均结构分": round(struct_avg, 6),
+            "各维度平均F1": dim_avg,
+            "平均综合分_teds_x_structure": round(combined_avg, 6),
+            "分桶平均结构分": {
+                k: round(sum(v) / len(v), 6) for k, v in sorted(struct_buckets.items())
             },
         },
         "records": records,
@@ -359,10 +470,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print("表数 %d  已打分 %d  gold 自检通过 %d/%d" % (
         stats["表数"], stats["已打分"], stats["gold自检通过数"], stats["表数"]))
     print("平均 TEDS %.6f  最低 %.6f" % (stats["平均TEDS"], stats["最低TEDS"]))
+    print("平均结构分 %.6f  平均综合分 %.6f  各维度F1=%s" % (
+        stats["平均结构分"], stats["平均综合分_teds_x_structure"],
+        json.dumps(stats["各维度平均F1"], ensure_ascii=False)))
     print("分桶平均: %s" % json.dumps(stats["分桶平均TEDS"], ensure_ascii=False))
     for record in records:
-        print("- %-16s %-5s TEDS=%.6f  row %s->%s col %s->%s  gold自检=%s" % (
+        print("- %-16s %-5s TEDS=%.6f 结构=%.6f 综合=%.6f  row %s->%s col %s->%s  gold自检=%s" % (
             str(record.get("bucket")), str(record.get("no")), float(record.get("teds") or 0.0),
+            float(record.get("structure_score") or 0.0), float(record.get("combined") or 0.0),
             record.get("gold_rows"), record.get("pred_rows"),
             record.get("gold_cols"), record.get("pred_cols"),
             "通过" if record.get("gold_自检_通过") else "有可疑格子"))

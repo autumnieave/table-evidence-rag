@@ -18,7 +18,7 @@
 但文本直接从原始 HTML 取，故可与解析输出做内容级比对。四项互补：
 「行数」管整体守恒，「单元格」管丢行后错位，两者都不通过才是硬伤。
 
-输出：``训练结果数据/table_struct_review/compare_report.json``。
+输出：``训练结果数据/table_struct_review_20261016/compare_report.json``。
 
 用法::
 
@@ -46,7 +46,7 @@ _REPO_ROOT = _SRC_ROOT.parent
 
 DEFAULT_CORPUS = _REPO_ROOT / "data_corpus" / "全部数据" / "正式数据" / "附件5：研报数据"
 DEFAULT_WORKLIST = _REPO_ROOT / "训练结果数据" / "table_struct_review_20261016" / "worklist.json"
-DEFAULT_OUT = _REPO_ROOT / "训练结果数据" / "table_struct_review" / "compare_report.json"
+DEFAULT_OUT = _REPO_ROOT / "训练结果数据" / "table_struct_review_20261016" / "compare_report.json"
 
 #: 解析器的空表头占位名（``项目`` / ``列N``）
 _PLACEHOLDER_RE = re.compile(r"^(?:项目|列\d+)$")

@@ -103,6 +103,8 @@ _UNIT_LABEL_RE = re.compile(r"单位\s*[:：]\s*(十亿元|千万元|百万元|�
 _CAPTION_RE = re.compile(r"^\s*(?:表|图表|图)\s*[0-9一二三四五六七八九十]+\s*[:：.、]?\s*\S")
 #: 表格来源 / 注释行（并入 caption，从正文剥离）
 _NOTE_RE = re.compile(r"^\s*(?:资料来源|数据来源|注|来源)\s*[:：]")
+#: 文本字符（汉字 / 拉丁字母）——用于把纯数字行排除在「分节标题行」之外
+_TEXT_CHAR_RE = re.compile(r"[A-Za-z\u4e00-\u9fff]")
 
 
 def _clean_cell(text: str) -> str:
@@ -114,6 +116,11 @@ def _clean_cell(text: str) -> str:
 def header_placeholder(index: int) -> str:
     """空表头列的占位名：首列用「项目」（标签列惯例），其余用「列N」。"""
     return _ROW_LABEL_PLACEHOLDER if index == 0 else _COL_PLACEHOLDER.format(index + 1)
+
+
+def _has_text_char(text: str) -> bool:
+    """是否含汉字或拉丁字母（区分「利润表」类标题行与「2023.07」类纯数字行）。"""
+    return bool(_TEXT_CHAR_RE.search(text or ""))
 
 
 def normalize_unit(label: Optional[str]) -> Optional[str]:
@@ -231,6 +238,10 @@ class TableGrid:
     """``headers`` 是否来自真实表头行；``False`` 表示用的是「项目 / 列N」占位名。"""
     is_key_value: bool = False
     """2 列键值卡片（如 ``总市值（百万元） | 11,349.65``）：**没有表头行**，按 ``键: 值`` 序列化。"""
+    raw_spans: List[Dict[str, int]] = field(default_factory=list)
+    """源网格里的合并单元格（``{"row": 源网格行号, "col": 列号, "rowspan": n, "colspan": m}``）。"""
+    consumed_rows: int = 0
+    """从源网格**剥掉的前置行数**（跨列标题行 + 表头行）——用于把 ``raw_spans`` 折算到 ``rows`` 坐标。"""
 
     @property
     def col_count(self) -> int:
@@ -310,7 +321,12 @@ def _pop_span_title_row(grid: List[List[str]]) -> Tuple[str, List[List[str]]]:
     return " ".join(titles), rows
 
 
-def _finalize_grid(grid: List[List[str]], caption: str = "", has_th: bool = False) -> Optional[TableGrid]:
+def _finalize_grid(
+    grid: List[List[str]],
+    caption: str = "",
+    has_th: bool = False,
+    spans: Optional[List[Dict[str, int]]] = None,
+) -> Optional[TableGrid]:
     """把二维网格收敛为 :class:`TableGrid`（统一补齐列宽 + 推断表头）。
 
     判定顺序见模块 docstring「语料实测」一节。
@@ -332,9 +348,13 @@ def _finalize_grid(grid: List[List[str]], caption: str = "", has_th: bool = Fals
             rows=grid[1:],
             caption=caption,
             has_header=True,
+            raw_spans=list(spans or []),
+            consumed_rows=1,
         )
 
+    rows_before_pop = len(grid)
     title, grid = _pop_span_title_row(grid)
+    title_rows = rows_before_pop - len(grid)
     caption = " ".join(part for part in (caption, title) if part).strip()
 
     if width <= 2:  # 键值卡片：首行就是数据，不能当表头
@@ -346,6 +366,8 @@ def _finalize_grid(grid: List[List[str]], caption: str = "", has_th: bool = Fals
             caption=caption,
             has_header=False,
             is_key_value=width == 2,
+            raw_spans=list(spans or []),
+            consumed_rows=title_rows,
         )
 
     if len(grid) >= 2:
@@ -357,6 +379,8 @@ def _finalize_grid(grid: List[List[str]], caption: str = "", has_th: bool = Fals
                 rows=grid[1:],
                 caption=caption,
                 has_header=True,
+                raw_spans=list(spans or []),
+                consumed_rows=title_rows + 1,
             )
 
     return TableGrid(
@@ -364,6 +388,8 @@ def _finalize_grid(grid: List[List[str]], caption: str = "", has_th: bool = Fals
         rows=grid,
         caption=caption,
         has_header=False,
+        raw_spans=list(spans or []),
+        consumed_rows=title_rows,
     )
 
 
@@ -390,7 +416,7 @@ def parse_markdown_table_grid(lines: Sequence[str]) -> Optional[TableGrid]:
         rows.append(_fit_cells(cells, len(headers)))
     if not rows:
         return None
-    return TableGrid(headers=list(headers), rows=rows, caption="", has_header=True)
+    return TableGrid(headers=list(headers), rows=rows, caption="", has_header=True, consumed_rows=1)
 
 
 def _parse_html_table_grid_regex(html_table: str) -> Optional[TableGrid]:
@@ -432,6 +458,7 @@ def parse_html_table_grid(html_table: str) -> Optional[TableGrid]:
         return _parse_html_table_grid_regex(html_table)
 
     grid: List[List[str]] = []
+    spans: List[Dict[str, int]] = []
     pending: Dict[int, List[Any]] = {}  # 列号 -> [文本, 还需向下填充的行数]
     has_th = False
 
@@ -442,6 +469,8 @@ def parse_html_table_grid(html_table: str) -> Optional[TableGrid]:
         if any(cell.name == "th" for cell in cells):
             has_th = True
         row: List[str] = []
+        row_index = len(grid)
+        row_spans: List[Dict[str, int]] = []
         col = 0
         for cell in cells:
             while col in pending:  # 先补齐上方 rowspan 遗留
@@ -461,6 +490,10 @@ def parse_html_table_grid(html_table: str) -> Optional[TableGrid]:
                 rowspan = max(1, int(cell.get("rowspan") or 1))
             except (TypeError, ValueError):
                 rowspan = 1
+            if colspan > 1 or rowspan > 1:
+                row_spans.append(
+                    {"row": row_index, "col": col, "rowspan": rowspan, "colspan": colspan}
+                )
             for offset in range(colspan):
                 row.append(text)
                 if rowspan > 1:
@@ -476,8 +509,9 @@ def parse_html_table_grid(html_table: str) -> Optional[TableGrid]:
             col += 1
         if any(row):
             grid.append(row)
+            spans.extend(row_spans)
 
-    return _finalize_grid(grid, has_th=has_th)
+    return _finalize_grid(grid, has_th=has_th, spans=spans)
 
 @dataclass
 class Table:
@@ -496,6 +530,23 @@ class Table:
     """``headers`` 是否来自真实表头行（``False`` = 「项目 / 列N」占位名）。"""
     is_key_value: bool = False
     """2 列键值卡片：无表头行，按 ``键: 值`` 序列化。"""
+    section_rows: List[int] = field(default_factory=list)
+    """**全宽标签行**在 ``rows`` 中的下标：整行只承载 1 段文本，**不是数据行**。
+
+    含分节标题（``利润表`` / ``成长能力`` / ``NCCN指南 (Version 3.2025)``）、说明与脚注
+    （``备注:评级标准…`` / ``资料来源：Wind``）。下游逐行取数时应跳过，否则会把标题当指标。
+
+    判定见 :func:`_detect_section_rows`；对全库 473 篇 / 2,990 张 HTML 表做过源 HTML 客观校验
+    （precision 98.5% / recall 99.8%，口径与残差见 ``docs/评估报告/数据管道重构方案_20261016.md``）。
+    """
+    sub_header_rows: List[int] = field(default_factory=list)
+    """**次级表头行**在 ``rows`` 中的下标：① 整行逐格等于表头行（跨子表重复表头）；
+    ② 紧跟分节标题行且「空列位置」与表头行一致（多级表头）。同样**不是数据行**。"""
+    merged_cells: List[Dict[str, int]] = field(default_factory=list)
+    """合并单元格：``{"row": ``rows`` 下标, "col": 列号, "rowspan": n, "colspan": m}``。
+
+    仅含落在 ``rows`` 内的 span（表头行自带的合并折算为 -1，不输出）；列表页的跨列合并即分节行。
+    """
     unit: Optional[str] = None
     unit_factor: int = 1
     unit_candidates: List[str] = field(default_factory=list)
@@ -598,7 +649,93 @@ class Table:
             "table_col_count": self.col_count,
             "table_has_header": self.has_header,
             "table_is_key_value": self.is_key_value,
+            "table_section_rows": list(self.section_rows),
+            "table_sub_header_rows": list(self.sub_header_rows),
+            "table_merged_cells": [dict(cell) for cell in self.merged_cells],
         }
+
+
+def _detect_section_rows(
+    rows: List[List[str]],
+    headers: List[str],
+    has_header: bool,
+    spans: Optional[List[Dict[str, int]]] = None,
+    width: int = 0,
+    span_facts: bool = False,
+) -> List[int]:
+    """检测**分节标题行**在 ``rows`` 中的下标：整行只承载 **1 个语义单元**。
+
+    信号按可靠性排序：
+
+    ① **结构信号（精确）**：源 ``<td colspan == 列宽>`` 独占整行——如
+       ``<td colspan="7">利润表</td>``、``<td colspan="3">备注:评级标准…</td>``；
+    ② **启发式（兜底）**：整行只剩 1 个非空格（``资本结构 |  |  |``；不限列位置，
+       因为源可能把它写在中间的 ``<td>`` 里），且该文本含汉字 / 拉丁字母
+       （排除 ``2023.07`` 这类纯数字行）；
+    ③ **启发式（兜底）**：列数 ≥3、**≥2 个非空格且文本全同**（跨列合并展开后的重复文本，
+       含「近满宽」形如 ``<td colspan="7">益丰药房</td><td></td>`` 的 8 列表）。
+       要求文本含汉字 / 拉丁字母——``是 | 是 | 是``、``- | - | -`` 这类短符号数据行因此被排除。
+
+    不带「后面必须有数据行」约束——表格末尾的 ``备注`` / ``资料来源`` 行同样是全宽标签行。
+    """
+    if not rows:
+        return []
+    col_count = width or len(headers)
+    structural = {
+        span["row"]
+        for span in (spans or [])
+        if col_count
+        and span.get("col", 0) == 0
+        and span.get("colspan", 1) >= col_count
+        and 0 <= span["row"] < len(rows)
+    }
+    found: List[int] = []
+    for index, row in enumerate(rows):
+        if index in structural:
+            continue  # 已由结构信号判定
+        cells = [_clean_cell(c) for c in row]
+        nonempty = [c for c in cells if c]
+        if not nonempty:
+            continue
+        is_label = len(nonempty) == 1 and _has_text_char(nonempty[0])
+        is_span = (
+            len(cells) >= 3
+            and len(nonempty) >= 2
+            and len(set(nonempty)) == 1
+            and _has_text_char(nonempty[0])
+        )
+        if is_label or is_span:
+            found.append(index)
+    return sorted(structural | set(found))
+
+
+def _detect_sub_header_rows(
+    rows: List[List[str]], headers: List[str], section_rows: List[int], has_header: bool
+) -> List[int]:
+    """检测**次级表头行**在 ``rows`` 中的下标。两种形态：
+
+    ① **跨子表重复表头**：整行逐格等于表头行——把一张表按「利润表 / 资产负债表 / 现金流量表」切成
+       三段时，每段都重抄一遍 ``会计年度 | 2022 | … | 2027E``；
+    ② **多级表头**：紧跟分节标题行，且「空列位置」与表头行一致（``NCCN指南`` 行之后的 ``|  | 首选 | 其他推荐``）。
+
+    两类行都**不是数据行**：下游逐行取数时必须跳过，否则会把 ``2027E`` 之类当成年份数值。
+    """
+    if not has_header or not headers:
+        return []
+    width = len(headers)
+    head = [_clean_cell(h) for h in headers]
+    head_norm = ["" if t == header_placeholder(i) else t for i, t in enumerate(head)]
+    pattern = [bool(t) for t in head_norm]
+    use_pattern = not (all(pattern) or not any(pattern))  # 表头行无空列特征时不做形态②判定
+    found: List[int] = []
+    for index, row in enumerate(rows):
+        cells = _fit_cells([_clean_cell(c) for c in row], width)
+        if any(cells) and cells == head_norm:  # ① 逐格等于表头行
+            found.append(index)
+            continue
+        if use_pattern and index - 1 in section_rows and [bool(c) for c in cells] == pattern:  # ②
+            found.append(index)
+    return found
 
 
 def build_table(
@@ -652,6 +789,27 @@ def build_table(
         if name not in metric_names:
             metric_names.append(name)
 
+    # 合并单元格：把源网格坐标折算到 ``rows`` 坐标（``raw_row - consumed_rows``；表头行为 -1）。
+    merged_cells = [
+        {
+            "row": span["row"] - grid.consumed_rows,
+            "col": span["col"],
+            "rowspan": span["rowspan"],
+            "colspan": span["colspan"],
+        }
+        for span in (grid.raw_spans or [])
+        if span["row"] - grid.consumed_rows >= 0
+    ]
+    section_rows = _detect_section_rows(
+        rows,
+        headers,
+        grid.has_header,
+        spans=merged_cells,
+        width=width,
+        span_facts=table_format == "html",
+    )
+    sub_header_rows = _detect_sub_header_rows(rows, headers, section_rows, grid.has_header)
+
     return Table(
         table_id="{}#t{}".format(source_file or "unknown", index + 1),
         source_file=source_file,
@@ -662,6 +820,9 @@ def build_table(
         rows=rows,
         has_header=grid.has_header,
         is_key_value=grid.is_key_value,
+        section_rows=section_rows,
+        sub_header_rows=sub_header_rows,
+        merged_cells=merged_cells,
         unit=unit,
         unit_factor=factor,
         unit_candidates=candidates,

@@ -456,3 +456,181 @@ def test_split_documents_legacy_mode_is_unchanged():
 def test_table_constants_defaults():
     assert TABLE_SLICE_ROWS == 40
     assert TABLE_JSON_MAX_CHARS == 6000
+
+# ---------------------------------------------------------------- 分节行 / 次级表头 / 合并单元格
+
+#: 表中间出现「跨满列的单格标题行」（语料 NO=13 的「利润表 / 资产负债表 / 现金流量表」形）
+SECTION_HTML = (
+    "<table>"
+    "<tr><td>会计年度</td><td>2024</td><td>2025E</td></tr>"
+    '<tr><td colspan="3">利润表</td></tr>'
+    "<tr><td>营业收入</td><td>3,728</td><td>4,411</td></tr>"
+    "<tr><td>净利润</td><td>528</td><td>644</td></tr>"
+    "</table>"
+)
+
+#: 表格**最后一行**是「备注:…」全宽说明行（语料 40 处；旧实现被「后面必须有数据行」漏掉）
+TAIL_NOTE_HTML = (
+    "<table>"
+    "<tr><td>证券评级</td><td>评级</td><td>说明</td></tr>"
+    "<tr><td>买入(Buy)</td><td>推荐</td><td>相对强于市场 20% 以上</td></tr>"
+    '<tr><td colspan="3">备注:评级标准为以报告日后的6~12个月</td></tr>'
+    "</table>"
+)
+
+#: 「近满宽」重复文本行：colspan=3 但表宽 4，余下一格为空（语料 NO=益丰药房 形）
+NEAR_FULL_HTML = (
+    "<table>"
+    "<tr><td>会计年度</td><td>a</td><td>b</td><td>c</td></tr>"
+    '<tr><td colspan="3">益丰药房</td><td></td></tr>'
+    "<tr><td>门店数</td><td>1</td><td>2</td><td>3</td></tr>"
+    "</table>"
+)
+
+#: 多级表头：NCCN 分节行之后又出现一行次级表头（语料 NO=8 形）
+SUB_HEADER_HTML = (
+    "<table>"
+    "<tr><td></td><td>I级推荐</td><td>II级推荐</td></tr>"
+    "<tr><td>一线治疗方案</td><td>奥希替尼</td><td>伏美替尼</td></tr>"
+    '<tr><td colspan="3">NCCN指南 (Version 3.2025)</td></tr>'
+    "<tr><td></td><td>首选</td><td>其他推荐</td></tr>"
+    "<tr><td>一线治疗方案</td><td>奥希替尼</td><td>埃万妥单抗</td></tr>"
+    "</table>"
+)
+
+#: 跨子表重复表头：分节行之后的整行与表头逐格相同（语料 NO=13 形）
+REPEAT_HEADER_HTML = (
+    "<table>"
+    "<tr><td>会计年度</td><td>2024</td><td>2025E</td></tr>"
+    '<tr><td colspan="3">利润表</td></tr>'
+    "<tr><td>会计年度</td><td>2024</td><td>2025E</td></tr>"
+    "<tr><td>营业收入</td><td>1</td><td>2</td></tr>"
+    "</table>"
+)
+
+#: rowspan 合并（语料 NO=16 形）
+MERGED_HTML = (
+    "<table>"
+    "<tr><td>评级标准</td><td>评级</td><td>说明</td></tr>"
+    '<tr><td rowspan="2">行业</td><td>推荐</td><td>A</td></tr>'
+    "<tr><td>中性</td><td>B</td></tr>"
+    "</table>"
+)
+
+#: 表头行自带的 colspan——坐标为 -1，属于表头行，**不输出**
+HEADER_SPAN_HTML = (
+    "<table>"
+    '<tr><td colspan="2">项目</td><td>2024</td></tr>'
+    "<tr><td>a</td><td>b</td><td>c</td></tr>"
+    "</table>"
+)
+
+
+def _html_table(html):
+    grid = parse_html_table_grid(html)
+    assert grid is not None
+    return build_table(0, "a.md", grid, table_format="html")
+
+
+def test_section_rows_detected_by_colspan_fact():
+    table = _html_table(SECTION_HTML)
+    assert table.rows[0] == ["利润表", "利润表", "利润表"]
+    assert table.section_rows == [0]
+    assert table.sub_header_rows == []
+
+
+def test_section_rows_include_trailing_note_row():
+    """旧实现要求「后面还有数据行」，会漏掉表格末尾的备注行。"""
+    table = _html_table(TAIL_NOTE_HTML)
+    assert table.section_rows == [1]
+    assert table.rows[1][0].startswith("备注:评级标准")
+
+
+def test_section_rows_near_full_width_repeated_text():
+    table = _html_table(NEAR_FULL_HTML)
+    assert table.section_rows == [0]
+
+
+def test_sub_header_rows_multi_level():
+    table = _html_table(SUB_HEADER_HTML)
+    assert table.section_rows == [1]
+    assert table.sub_header_rows == [2]
+
+
+def test_sub_header_rows_repeated_header_row():
+    table = _html_table(REPEAT_HEADER_HTML)
+    assert table.section_rows == [0]
+    assert table.sub_header_rows == [1]
+
+
+def test_merged_cells_mapped_to_rows_coordinates():
+    table = _html_table(MERGED_HTML)
+    assert table.merged_cells == [{"row": 0, "col": 0, "rowspan": 2, "colspan": 1}]
+    assert table.section_rows == [] and table.sub_header_rows == []
+
+
+def test_merged_cells_exclude_header_row():
+    table = _html_table(HEADER_SPAN_HTML)
+    assert table.merged_cells == []  # 表头行的 span 折算为 -1，不属于 rows
+
+
+def test_two_column_table_is_key_value_and_uses_span_fact():
+    """该行只有 2 格 → 性质③（要求列数 ≥3）覆盖不到，只能靠 colspan 事实判定。"""
+    html = (
+        "<table>"
+        "<tr><td>项目</td><td>2024</td></tr>"
+        '<tr><td colspan="2">利润表</td></tr>'
+        "<tr><td>营业收入</td><td>1</td></tr>"
+        "</table>"
+    )
+    table = _html_table(html)
+    assert table.is_key_value is True  # 2 列表走「键值卡片」分支，不消费表头行
+    assert table.section_rows == [1]
+
+
+def test_section_rows_ignore_pure_numeric_label_in_markdown():
+    grid = parse_markdown_table_grid(
+        [
+            "| 项目 | 2024 | 2025E |",
+            "| --- | --- | --- |",
+            "| 营业收入 | 1 | 2 |",
+            "| 2023.07 |  |  |",
+        ]
+    )
+    assert grid is not None
+    table = build_table(0, "a.md", grid)  # markdown：无 colspan 事实
+    assert table.section_rows == []
+
+
+def test_section_rows_markdown_label_row():
+    grid = parse_markdown_table_grid(
+        [
+            "| 项目 | 2024 | 2025E |",
+            "| --- | --- | --- |",
+            "| 利润表 |  |  |",
+            "| 营业收入 | 1 | 2 |",
+        ]
+    )
+    assert grid is not None
+    table = build_table(0, "a.md", grid)
+    assert table.section_rows == [0]
+
+
+def test_key_value_table_has_no_structure_annotations():
+    table = _html_table(KEY_VALUE_HTML)
+    assert table.section_rows == [] and table.sub_header_rows == [] and table.merged_cells == []
+
+
+def test_to_payload_exposes_structure_annotations():
+    table = _html_table(MERGED_HTML)
+    payload = table.to_payload()
+    assert payload["table_section_rows"] == []
+    assert payload["table_sub_header_rows"] == []
+    assert payload["table_merged_cells"] == [{"row": 0, "col": 0, "rowspan": 2, "colspan": 1}]
+
+
+def test_scan_tables_annotates_section_and_merge():
+    prose, tables = scan_tables(SECTION_HTML, source_file="a.md")
+    assert prose.strip() == ""
+    assert len(tables) == 1
+    assert tables[0].section_rows == [0]
