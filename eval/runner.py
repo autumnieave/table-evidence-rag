@@ -239,6 +239,12 @@ def cmd_llm_judge(args: Any) -> int:
     return judge_mod.main(argv)
 
 
+
+def cmd_multi_stage(args: Any) -> int:
+    """阶段 3 多阶段检索评测（委托 eval/multi_stage_eval.py）"""
+    from eval import multi_stage_eval
+    return multi_stage_eval.main(["--suite", args.suite])
+
 def build_parser() -> argparse.ArgumentParser:
     """组装子命令解析器"""
     parser = argparse.ArgumentParser(prog="eval", description="智能问数系统评估闭环（golden 版本化 + SQL/引用回归）")
@@ -316,6 +322,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_judge.add_argument("--answer-key", default="", help="先验登记表路径（B-36，默认取 eval 内置默认值）")
     p_judge.add_argument("--no-prior", action="store_true", help="不加载先验登记表（B-36）")
     p_judge.set_defaults(func=cmd_llm_judge)
+
+    p_ms = sub.add_parser("multi-stage", help="多阶段检索评测（entities / l5 / l5_vector / latency）")
+    p_ms.add_argument("--suite", choices=("entities", "l5", "l5_full", "l5_vector", "latency"), required=True)
+    p_ms.set_defaults(func=cmd_multi_stage)
 
     p_rep = sub.add_parser("report", help="聚合最新证据生成评估报告")
     p_rep.add_argument("--out", default="docs/评估报告.md", help="输出路径（默认 docs/评估报告.md）")

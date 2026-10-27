@@ -23,7 +23,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+#: 数字 token：支持千分位逗号（``3,369`` / ``1,234,567.89``），避免把同一个数拆成两段。
+#: 匹配前仍由 ``_normalize_for_match`` 去掉逗号，所以 L1 比对口径不变。
+_NUMBER_RE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
 _ASCII_QUOTE = '"'
 # 数字/空白/小数点连续片段（用于折叠 LaTeX 排版空格，如 "8 7 . 5"）
 _DIGIT_RUN_RE = re.compile(r"\d[\d\s\u00a0.]*")
@@ -50,6 +52,8 @@ def _collapse_number_spaces(text: str) -> str:
         折叠数字内部空白后的文本
     """
     protected = re.sub(r"(?<=\d{4})\s+(?=\d{4})", "\x00", text or "")
+    # 保护列表序号 + 年份（``1. 2025``），避免被当成小数折成 ``1.2025``。
+    protected = re.sub(r"(?<=\d)\.\s+(?=\d{4}(?!\d))", "\x01 ", protected)
 
     def _fix(match: "re.Match[str]") -> str:
         run = match.group(0)
@@ -59,7 +63,7 @@ def _collapse_number_spaces(text: str) -> str:
         return run.replace("\x00", " ")
 
     collapsed = _DIGIT_RUN_RE.sub(_fix, protected)
-    return collapsed.replace("\x00", " ")
+    return collapsed.replace("\x00", " ").replace("\x01", ".")
 
 
 def _unit_variants(number: str) -> Dict[str, str]:

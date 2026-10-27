@@ -1,4 +1,4 @@
-"""data.table_struct 表格结构化单元测试（纯逻辑、零外部依赖）。"""
+﻿"""data.table_struct 表格结构化单元测试（纯逻辑、零外部依赖）。"""
 
 import json
 
@@ -648,6 +648,7 @@ def test_doc_level_fields_reads_stock_and_period():
     assert fields["stock_code"] == "002821"
     assert fields["stock_name"] == "凯莱英"
     assert fields["report_period"] == "2025Q3"
+    assert fields["publish_year"] == 2025
     assert fields["doc_type"] == "stock"
 
 
@@ -676,6 +677,7 @@ def test_structured_prose_chunks_carry_doc_level_metadata():
         assert chunk["metadata"]["stock_code"] == "002821"
         assert chunk["metadata"]["stock_name"] == "凯莱英"
         assert chunk["metadata"]["report_period"] == "2025Q3"
+        assert chunk["metadata"]["publish_year"] == 2025
         assert chunk["metadata"]["chunk_type"] == "prose"
 
 
@@ -728,3 +730,301 @@ def test_split_documents_structured_table_chunks_stay_within_char_budget():
     assert len(tables) > 3
     assert all(len(c["content"]) <= 600 for c in tables)
     assert sum(c["metadata"]["row_end"] - c["metadata"]["row_start"] for c in tables) == 60
+
+# ---------------------------------------------------------------------------
+# P1 元数据覆盖率提升（2026-10-16）：报告期强/弱口径、三级来源、合理性闸门
+# ---------------------------------------------------------------------------
+def test_normalize_year_two_digit():
+    from data.table_struct import normalize_year
+
+    assert normalize_year("2025") == "2025"
+    assert normalize_year("24") == "2024"
+    assert normalize_year("19") == "2019"
+    assert normalize_year("98") == "1998"
+
+
+def test_extract_report_period_strict_forms():
+    """强口径：2 位年 + 三季报/三季度/半年度（旧口径漏掉的高频写法）。"""
+    from data.table_struct import extract_report_period_strict as s
+
+    assert s("25H1工业收入快速增长") == "2025H1"
+    assert s("25Q1业绩承压") == "2025Q1"
+    # 双报告期标题（年报 + 一季报）按既有约定取「季度形式」的那个（更近的报告期）
+    assert s("2024年报&25年一季报点评") == "2025Q1"
+    assert s("2024年年报点评：核心业务保持稳健") == "2024A"
+    assert s("2025三季报点评") == "2025Q3"
+    assert s("2025 年三季度报点评") == "2025Q3"      # 「三季度」走 CN 季度
+    assert s("2025年半年度业绩预告点评") == "2025H1"   # 「半年度」不再误判成 2025A
+    assert s("公司发布2025年前三季度业绩") == "2025Q3"
+    assert s("2025年一季报点评") == "2025Q1"
+    # 裸年份不算强证据
+    assert s("2025年中国中药市场行业研究报告") is None
+    assert s("2024年医药行业投资策略") is None
+
+
+def test_extract_report_period_weak_keeps_bare_year():
+    """宽松口径保留裸年份兜底（历史行为不变）。"""
+    from data.table_struct import extract_report_period
+
+    assert extract_report_period("2024年行业概览") == "2024A"
+    assert extract_report_period("2025Q3") == "2025Q3"
+    assert extract_report_period("没有报告期") is None
+
+
+def test_second_digit_year_not_taken_from_long_number():
+    """2 位年不能从长数字里截取（``2018年`` 不能被读成 ``18年``）。"""
+    from data.table_struct import extract_report_period_strict
+
+    assert extract_report_period_strict("2018年度报告") == "2018A"
+    assert extract_report_period_strict("SAC：S1350524030002 2025年一季报") == "2025Q1"
+
+
+def test_resolve_report_period_three_levels():
+    """三级来源：标题强期词 → 标题裸年份（需类型词）→ 正文首段（仅个股）。"""
+    from data.splitter import resolve_report_period
+
+    assert resolve_report_period("凯莱英2025年三季度报点评", doc_type="stock") == ("2025Q3", "title")
+    assert resolve_report_period("2024年业绩超预期，华润赋能持续推进", doc_type="stock") == ("2024A", "title_weak")
+    assert resolve_report_period("BD进入收获期，未来表现有望向好", "投资要点：2025 年 11 月，公司发布 2025 年三季报。",
+                                 doc_type="stock") == ("2025Q3", "body")
+    assert resolve_report_period("BD进入收获期", "2024年行业概览", doc_type="stock") == (None, "none")
+
+
+def test_resolve_report_period_body_disabled_for_industry():
+    """行业研报**不**用正文首段推断（会把顺带提及的季度当报告期）。"""
+    from data.splitter import resolve_report_period
+
+    assert resolve_report_period("医药健康行业研究：创新药龙头BD频出",
+                                 "2025Q2 板块业绩企稳，推荐……", doc_type="industry") == (None, "none")
+    # 标题里的强期词仍然认
+    assert resolve_report_period("中药Ⅱ行业跟踪报告：2025H1：业绩承压", doc_type="industry") == ("2025H1", "title")
+
+
+def test_publish_year_and_plausibility_gate():
+    """报告期不得晚于发布年（策略报告的「预测年度」不是报告期）。"""
+    from data.splitter import period_is_plausible, publish_year
+
+    meta = {"publishDate": "2025-12-01", "filename": "2026年医药行业投资策略.md"}
+    assert publish_year(meta) == 2025
+    assert period_is_plausible("2025Q3", meta) is True
+    assert period_is_plausible("2026A", meta) is False
+    # 发布年取不到 → 不判断（宁可留空也不误杀）
+    assert period_is_plausible("2026A", {}) is True
+
+
+def test_doc_level_fields_records_period_source():
+    from data.splitter import doc_level_fields
+
+    fields = doc_level_fields({"title": "24年报点评：业绩稳健", "stockCode": "600519"})
+    assert fields["report_period"] == "2024A"
+    assert fields["report_period_source"] == "title"
+
+    fields = doc_level_fields({"title": "2024年中国中药市场行业研究报告"})
+    assert fields["report_period"] is None
+    assert fields["report_period_source"] == "none"
+
+
+def test_doc_level_fields_publish_year_supplements_report_period():
+    """``publish_year`` 是**补充字段、不替代** ``report_period``（2026-10-17 决策）。
+
+    行业研报没有报告期语义（市场/策略/周报），但**有发布年** ⇒ L5-C 期间过滤对行业研报用它。
+    """
+    from data.splitter import doc_level_fields
+
+    industry = doc_level_fields({"title": "2025年医药行业投资策略：聚焦创新"})
+    assert industry["report_period"] is None
+    assert industry["publish_year"] == 2025
+    assert industry["doc_type"] == "industry"
+
+    stock = doc_level_fields({"title": "2024年报点评：业绩稳健", "stockCode": "600519"})
+    assert stock["report_period"] == "2024A"
+    assert stock["publish_year"] == 2024
+
+    # 边界：`publish_year` 只认 **4 位年**（2 位年不猜）；真实语料里 4 位年由 `publishDate` / `filename` 提供
+    two_digit = doc_level_fields({"title": "24年报点评：业绩稳健", "stockCode": "600519"})
+    assert two_digit["report_period"] == "2024A"
+    assert two_digit["publish_year"] is None
+    assert doc_level_fields({"filename": "20240315_某公司深度报告.md"})["publish_year"] == 2024
+    assert doc_level_fields({"filename": "无年份文件名.md"})["publish_year"] is None
+
+
+def test_structured_table_chunks_carry_publish_year():
+    """表格块也要带 ``publish_year``（结构化口径）。"""
+    import pathlib
+    import sys
+
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
+    from data.splitter import split_documents
+
+    docs = [{
+        "content": "# 投资要点\n\n| 指标 | 2024A | 2025E |\n| --- | --- | --- |\n| 营业收入 | 100 | 120 |\n",
+        "metadata": {"filename": "a.md", "title": "凯莱英2025年三季度报点评：新兴业务维持高增长",
+                     "stockCode": "002821", "stockName": "凯莱英"},
+    }]
+    chunks = split_documents(docs, chunk_size=256, chunk_overlap=0, table_mode="structured")
+    table_chunks = [c for c in chunks if c["metadata"].get("chunk_type") == "table"]
+    assert table_chunks
+    for chunk in table_chunks:
+        assert chunk["metadata"]["publish_year"] == 2025
+
+
+def test_detect_unit_with_currency_prefix():
+    from data.table_struct import detect_unit
+
+    assert detect_unit("表1：主要指标（人民币百万元）") == ("百万元", 1000000)
+    assert detect_unit("单位：人民币万元") == ("万元", 10000)
+
+
+def test_build_table_unit_from_body_when_head_and_first_column_empty():
+    """单位只写在表体单元格里时也能识别（新增 body_text 扫描源）。"""
+    from data.table_struct import TableGrid, build_table
+
+    grid = TableGrid(headers=["项目", "2024A"], rows=[["营业收入", "100"], ["（单位：万元）", ""]],
+                     has_header=True, caption="", is_key_value=False)
+    table = build_table(0, "a.md", grid)
+    assert table.unit == "万元"
+    assert table.unit_factor == 10000
+
+
+def test_build_table_metric_names_fallback_to_any_cell():
+    """首列不是指标名时，兜底从全表任意单元格里取指标词。"""
+    from data.table_struct import TableGrid, build_table
+
+    grid = TableGrid(headers=["公司", "数据"], rows=[["片仔癀", "营业收入 100"], ["云南白药", "净利润 20"]],
+                     has_header=True, caption="", is_key_value=False)
+    table = build_table(0, "a.md", grid)
+    assert "营业收入" in table.metric_names
+    assert "净利润" in table.metric_names
+    # 只收命中的词，不带数值
+    assert all(len(name) <= 10 for name in table.metric_names)
+
+# ---------------------------------------------------------------- 阶段 1 契约
+
+def test_unit_source_cell_caption_footnote():
+    """unit 回退链按 cell -> caption/title -> footnote 记录来源。"""
+    cell = build_table(
+        0, "a.md", _grid(["项目", "2024A（万元）"], [["营业收入", "100"]])
+    )
+    assert cell.unit == "万元" and cell.unit_source == "cell"
+
+    caption = build_table(
+        0, "a.md", _grid(["项目", "2024A"], [["营业收入", "100"]]),
+        caption="表1：主要指标（亿元）",
+    )
+    assert caption.unit == "亿元" and caption.unit_source == "caption"
+
+    footnote = build_table(
+        0, "a.md", _grid(["项目", "2024A"],
+                         [["营业收入", "100"], ["注：单位：百万元", ""]]),
+    )
+    assert footnote.unit == "百万元" and footnote.unit_source == "footnote"
+
+
+def test_unit_source_multi_when_sources_conflict():
+    """不同来源出现不同单位时置 multi，不取众数、不猜。"""
+    table = build_table(
+        0, "a.md", _grid(["项目", "2024A（万元）"], [["营业收入", "100"]]),
+        caption="表1：主要指标（亿元）",
+    )
+    assert table.unit is None
+    assert table.unit_source == "multi"
+    assert set(table.unit_candidates) == {"万元", "亿元"}
+
+
+def test_table_type_and_scope_contract():
+    """阶段 1 的 table_type / table_scope 基本分类。"""
+    financial = build_table(
+        0, "a.md", _grid(["项目", "2024A"], [["营业收入", "100"]]),
+        caption="资产负债表", doc_type="stock",
+    )
+    assert financial.table_type == "financial_statement"
+    assert financial.table_scope == "stock"
+
+    ranking = build_table(
+        0, "a.md", _grid(["排名", "公司", "涨跌幅"], [["1", "A", "5%"]]),
+        caption="个股涨幅排名", doc_type="industry",
+    )
+    assert ranking.table_type == "ranking"
+    assert ranking.table_scope == "industry"
+
+    pipeline = build_table(
+        0, "a.md", _grid(["药品", "靶点", "适应症"], [["A", "B", "C"]]),
+        caption="研发管线", doc_type="industry",
+    )
+    assert pipeline.table_type == "pipeline"
+
+    valuation = build_table(
+        0, "a.md", _grid(["公司", "PE", "PB"], [["A", "10", "2"]]),
+        caption="估值表", doc_type="stock",
+    )
+    assert valuation.table_type == "valuation"
+
+    industry = build_table(
+        0, "a.md", _grid(["行业", "营收同比"], [["中药", "5%"]]),
+        doc_type="industry",
+    )
+    assert industry.table_type == "industry_summary"
+    assert industry.table_scope == "industry"
+
+
+def test_table_scope_mixed_and_unknown():
+    mixed = build_table(
+        0, "a.md",
+        _grid(["公司", "指标"], [["600519.SH", "营业收入"], ["000001.SZ", "净利润"]]),
+        caption="行业对比", doc_type="stock",
+    )
+    assert mixed.table_scope == "mixed"
+
+    unknown = build_table(
+        0, "a.md", _grid(["项目", "数值"], [["其他", "100"]]),
+    )
+    assert unknown.table_scope == "unknown"
+
+
+def test_structured_table_chunks_carry_contract_fields():
+    """结构化 chunk 必须带 unit_source / table_type / table_scope。"""
+    import pathlib
+    import sys
+
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
+    from data.splitter import split_documents
+
+    docs = [{
+        "content": "| 指标 | 2024A（万元） |\n| --- | --- |\n| 营业收入 | 100 |\n",
+        "metadata": {"filename": "a.md", "title": "某公司2024年报点评",
+                     "stockCode": "600519", "stockName": "贵州茅台"},
+    }]
+    chunks = split_documents(docs, chunk_size=256, chunk_overlap=0, table_mode="structured")
+    table_chunks = [c for c in chunks if c["metadata"].get("chunk_type") == "table"]
+    assert table_chunks
+    meta = table_chunks[0]["metadata"]
+    assert meta["unit_source"] == "cell"
+    assert meta["table_type"] == "financial_statement"
+    assert meta["table_scope"] == "stock"
+    assert "unit_candidates" in meta
+
+def test_table_type_priority_forecast_and_financial_over_valuation():
+    """预测标记优先于 EPS/PE；财务指标优先于纯估值词。
+
+    回归：2025E 预测表曾被 ``EPS`` 抢判为 valuation（全库 327 张同类）。
+    """
+    forecast = build_table(
+        0, "a.md",
+        _grid(["项目", "2024A", "2025E"], [["营业收入", "100", "120"], ["每股收益", "1.0", "1.2"]]),
+        caption="盈利预测与估值(人民币)", doc_type="stock",
+    )
+    assert forecast.table_type == "forecast"
+
+    financial = build_table(
+        0, "a.md",
+        _grid(["项目", "2024A"], [["营业收入", "100"], ["每股收益", "1.0"]]),
+        doc_type="stock",
+    )
+    assert financial.table_type == "financial_statement"
+
+    valuation = build_table(
+        0, "a.md",
+        _grid(["公司", "PE", "PB"], [["A", "10", "2"]]),
+        caption="可比公司估值", doc_type="stock",
+    )
+    assert valuation.table_type == "valuation"

@@ -86,3 +86,13 @@ database/answer_keys/
 # ===== 测试覆盖率产物 =====
 .coverage
 htmlcov/
+
+# 运行缓存与中间件
+database/*.pkl
+训练结果数据/
+
+# 内部隐私资产（绝对不可公开）
+docs/评估报告/L5新集合标注工作单_v1.md
+docs/简历_RAG项目_20261023.md
+docs/面试材料_RAG项目_20261023.md
+docs/岗位叙事侧重_20261023.md

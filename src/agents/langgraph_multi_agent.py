@@ -47,6 +47,19 @@ _FINANCIAL_INTENT_MARKERS: tuple = (
     "季度", "三季度", "年报", "半年报", "三季报", "财报", "业绩",
 )
 
+#: Router 轻量版：研报/观点类意图关键词（只用于 route_type 标记，不改变任务派发）
+_RESEARCH_INTENT_MARKERS: tuple = (
+    "研报", "研究报告", "券商", "观点", "点评", "评级", "目标价", "行业",
+    "产业链", "竞争格局", "市场份额", "原因", "驱动因素", "展望", "趋势",
+    "分析", "解读", "观点汇总", "机构",
+)
+
+#: Router 三分类取值（轻量版只做标记，不做 Mixed 独立 Skill 节点）
+ROUTE_FINANCIAL: str = "financial"
+ROUTE_RESEARCH: str = "research"
+ROUTE_MIXED: str = "mixed"
+ROUTE_TYPES: tuple = (ROUTE_FINANCIAL, ROUTE_RESEARCH, ROUTE_MIXED)
+
 #: B-27 注入请求信号（命中且系统给出数据回答时，前缀『先拒答后回答』话术）
 _INJECTION_REQUEST_MARKERS: tuple = (
     # 指令劫持类：要求复述/忽略系统规则、越权、探库结构
@@ -87,6 +100,7 @@ class MultiAgentState(TypedDict, total=False):
 
     messages: List[Dict[str, Any]]
     user_query: str
+    route_type: str
     tasks: List[Dict[str, str]]
     subtask_results: Dict[str, List[Dict[str, Any]]]
     rounds: int
@@ -202,8 +216,11 @@ class LangGraphMultiAgentPlanner:
         # B-26 兜底：supervisor 仍无任务但问题带财务意图 → 强制补派 financial 单任务，
         # 先由财务子 Agent 查库核验，避免未经查库就 finalize 断言“数据未披露/不存在”。
         tasks = self._ensure_financial_task(state["user_query"], tasks)
+        explicit_route = self._parse_route_type(content)
+        route_type = self._normalize_route_type(explicit_route, state["user_query"], tasks)
         return {
             "tasks": tasks,
+            "route_type": route_type,
             "messages": state["messages"] + [{"role": "assistant", "content": content}],
         }
 
@@ -224,6 +241,71 @@ class LangGraphMultiAgentPlanner:
         if not text:
             return False
         return any(k in text for k in _FINANCIAL_INTENT_MARKERS)
+
+    @staticmethod
+    def _classify_route_type(question: str, tasks: Optional[List[Dict[str, str]]] = None) -> str:
+        """轻量三分类：financial / research / mixed。
+
+        口径：
+        - 已有任务时**以实际派发的任务为准**（同时含两类 → mixed）；
+        - 无任务时按关键词兜底：财务词 + 研报词 → mixed，仅财务词 → financial，
+          仅研报词 → research；都没有时归入 research（非财务问答桶，含闲聊）。
+
+        这只是路由标记，不改变 LangGraph 图结构，也不新增 Mixed 独立 Skill 节点。
+
+        Args:
+            question: 用户原始问题
+            tasks: supervisor 已拆出的任务列表
+
+        Returns:
+            ``financial`` / ``research`` / ``mixed``
+        """
+        agents = {
+            str((task or {}).get("agent") or "")
+            for task in (tasks or [])
+            if isinstance(task, dict)
+        }
+        has_financial = ROUTE_FINANCIAL in agents
+        has_research = ROUTE_RESEARCH in agents
+        if has_financial and has_research:
+            return ROUTE_MIXED
+        if has_financial:
+            return ROUTE_FINANCIAL
+        if has_research:
+            return ROUTE_RESEARCH
+
+        text = (question or "").strip()
+        financial = LangGraphMultiAgentPlanner._looks_like_financial_query(text)
+        research = any(k in text for k in _RESEARCH_INTENT_MARKERS)
+        if financial and research:
+            return ROUTE_MIXED
+        if financial:
+            return ROUTE_FINANCIAL
+        return ROUTE_RESEARCH
+
+    @staticmethod
+    def _parse_route_type(content: str) -> str:
+        """解析 supervisor JSON 中可选的 ``route_type``；非法/缺失返回空串。"""
+        try:
+            obj = json.loads(content)
+        except (TypeError, ValueError):
+            return ""
+        if not isinstance(obj, dict):
+            return ""
+        value = str(obj.get("route_type") or "").strip().lower()
+        return value if value in ROUTE_TYPES else ""
+
+    @staticmethod
+    def _normalize_route_type(
+        explicit: str,
+        question: str,
+        tasks: Optional[List[Dict[str, str]]] = None,
+    ) -> str:
+        """以任务派发为准归一 route_type；无任务时才信任显式值/关键词。"""
+        derived = LangGraphMultiAgentPlanner._classify_route_type(question, tasks)
+        if tasks:
+            return derived
+        return explicit if explicit in ROUTE_TYPES else derived
 
     @staticmethod
     def _ensure_financial_task(user_query: str, tasks: List[Dict[str, str]]) -> List[Dict[str, str]]:
@@ -706,6 +788,7 @@ class LangGraphMultiAgentPlanner:
             {
                 "messages": messages,
                 "user_query": user_query,
+                "route_type": "",
                 "tasks": [],
                 "subtask_results": {},
                 "rounds": 0,
@@ -721,6 +804,10 @@ class LangGraphMultiAgentPlanner:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("LangGraph 多 Agent checkpoint 写回 last_active 失败: %s", exc)
         result = output.get("result") or {"content": "", "image": [], "references": []}
+        result.setdefault(
+            "route_type",
+            output.get("route_type") or self._classify_route_type(user_query, output.get("tasks") or []),
+        )
         # B-29 研报预测/评级转述口径守卫（方案 B：裁剪操作性建议 + 附免责声明）
         # 注意顺序：必须先于 B-27 注入前缀——拒答前缀本身含「荐股目标价」字样，
         # 若在其后过滤会把显式拒答句误裁掉，削弱『先拒答后回答』口径。

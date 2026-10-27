@@ -19,6 +19,7 @@ from tools.claim_evidence_locator import (
     build_unit_index,
     build_opinion_prompt,
     cosine,
+    detect_material_unit,
     extract_number_claims,
     extract_opinion_claims,
     full_text_in_payload,
@@ -27,6 +28,7 @@ from tools.claim_evidence_locator import (
     locate_answer,
     locate_number_claim,
     locate_opinion_claim,
+    mask_quarter_tokens,
     merge_windows,
     parse_opinion_output,
     ref_text,
@@ -36,6 +38,7 @@ from tools.claim_evidence_locator import (
     has_unit_context,
     sql_rows_to_material,
     sql_value_matches,
+    stock_code_numbers,
 )
 
 ANSWER = "2025 年公司营收 12.3 亿元，同比增长 8.5%。公司营收同比提升主要来自渠道扩张。"
@@ -533,3 +536,104 @@ def test_locate_answer_b2005_rounding_gap_closed():
     assert ce["evidence"][0]["hit_type"] == "sql_tolerance"
     assert out["meta"]["n_extra_materials"] == 1
     assert out["meta"]["sql_number_tolerance"] is True
+
+
+# ----------------------------------------------------------------- 评测器修复回归（单位/代码/季度/配额/引表）
+
+
+def test_detect_material_unit_prefers_long_currency_unit():
+    assert detect_material_unit("营业收入（百万元）\n12386.02") == "百万元"
+    assert detect_material_unit("金额（亿元）") == "亿元"
+    assert detect_material_unit("PE(TTM) 21.21 倍") == "倍"
+    # 表头排版空格：最新市 值(亿 元) 必须识别为亿元
+    assert detect_material_unit("最新市 值(亿 元)") == "亿元"
+    assert detect_material_unit("无单位文本") is None
+
+
+def test_locate_number_claim_rounding_against_spaced_header_unit():
+    """B2080 实测：答案 561 亿元 vs 表头“最新市 值(亿 元)” 的 560.93。"""
+    claim = Claim(text="同仁堂（市值约 561 亿元）", kind="number", start=0, end=14, numbers=["561"])
+    text = "| 项目 | 最新市 值(亿 元) |\n| 同仁堂 | 560.93 |"
+    evidence = locate_number_claim(claim, [_ref(text)])
+    assert evidence
+    assert evidence[0].matched_numbers == ["561"]
+
+
+def test_locate_number_claim_percent_row_inherits_claim_unit():
+    """B2002 实测：排行表行内只有 2.17，单位 % 只出现在答案 claim 里。"""
+    claim = Claim(text="中恒集团（涨幅 2.17%）", kind="number", start=0, end=13, numbers=["2.17"])
+    text = "| 涨幅前5 | 2 | 中恒集团 | 2.17 |"
+    evidence = locate_number_claim(claim, [_ref(text)])
+    assert evidence
+    assert evidence[0].matched_numbers == ["2.17"]
+
+
+def test_extract_number_claims_masks_quarter_and_stock_code():
+    answer = "2025Q3 与 2025H1 公司营收 12.3 亿元，代码：423；PZH2108 处于 II 期临床，来源 t2。"
+    claims = extract_number_claims(answer)
+    assert [n for c in claims for n in c.numbers] == ["12.3"]
+    assert mask_quarter_tokens("2025Q3") == "      "
+    assert mask_quarter_tokens("2025H1") == "      "
+    assert stock_code_numbers("代码：423；代码：000538") == {"423", "000538"}
+
+
+def test_locate_number_claim_converts_currency_units_with_header_inheritance():
+    """123.86 亿元 == 12386.02 百万元，行内无单位时继承表头单位。"""
+    claim = Claim(text="营收 123.86 亿元", kind="number", start=0, end=11, numbers=["123.86"])
+    evidence = locate_number_claim(claim, [_ref("营业收入（百万元）\n12386.02")])
+    assert len(evidence) == 1
+    assert evidence[0].matched_numbers == ["123.86"]
+
+
+def test_locate_number_claim_converts_currency_sign_agnostic():
+    """资产减值损失 4319 万元 vs 源表 -43.19 百万元：金额单位换算按绝对值。"""
+    claim = Claim(text="资产减值损失 4319 万元", kind="number", start=0, end=14, numbers=["4319"])
+    evidence = locate_number_claim(claim, [_ref("项目（百万元）\n资产减值损失 -43.19")])
+    assert len(evidence) == 1
+    assert evidence[0].matched_numbers == ["4319"]
+
+
+def test_locate_number_claim_converts_plain_currency_pairs():
+    for answer_value, source_value in (("2200", "22"), ("6600", "66")):
+        claim = Claim(
+            text="金额 %s 万元" % answer_value,
+            kind="number",
+            start=0,
+            end=10,
+            numbers=[answer_value],
+        )
+        evidence = locate_number_claim(claim, [_ref("项目（百万元）\n金额 %s" % source_value)])
+        assert len(evidence) == 1, (answer_value, source_value)
+
+
+def test_locate_number_claim_does_not_treat_multiple_as_currency():
+    """2120.99 万元 不应命中 PE(TTM): 21.21 倍。"""
+    claim = Claim(text="营业成本 2120.99 万元", kind="number", start=0, end=15, numbers=["2120.99"])
+    assert locate_number_claim(claim, [_ref("PE(TTM): 21.21 倍")]) == []
+
+
+def test_number_evidence_quota_covers_multiple_numbers():
+    answer = "营收 12.3 亿元，同比 8.5%。"
+    claim = extract_number_claims(answer)[0]
+    text = "营收 12.3 亿元。\n说明一。\n营收 12.3 亿元。\n说明二。\n营收 12.3 亿元。\n说明三。\n同比 8.5%。"
+    evidence = locate_number_claim(claim, [_ref(text)], window=0, max_per_ref=0, max_total=2)
+    covered = {n for e in evidence for n in e.matched_numbers}
+    assert len(evidence) == 2
+    assert covered == {"12.3", "8.5"}
+
+
+def test_number_evidence_prefers_claim_cited_table():
+    claim = Claim(
+        text="营收 12.3 亿元【表：研报B.md#t4】",
+        kind="number",
+        start=0,
+        end=20,
+        numbers=["12.3"],
+    )
+    refs = [
+        {"paper_path": "研报A.md", "chunk_index": 0, "full_text": "营收 12.3 亿元。"},
+        {"paper_path": "研报B.md#t4", "chunk_index": 0, "full_text": "营收 12.3 亿元。"},
+    ]
+    evidence = locate_number_claim(claim, refs, max_per_ref=0, max_total=1)
+    assert len(evidence) == 1
+    assert evidence[0].paper_path == "研报B.md#t4"

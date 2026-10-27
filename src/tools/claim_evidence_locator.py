@@ -67,14 +67,19 @@ DEFAULT_SENTENCE_WINDOW: int = 2
 DEFAULT_TOP_K: int = 3
 DEFAULT_UNIT_CHARS: int = 800
 DEFAULT_MAX_OPINION_CLAIMS: int = 8
-DEFAULT_MAX_EVIDENCE_PER_CLAIM: int = 5
-DEFAULT_MAX_EVIDENCE_PER_REF: int = 2
+DEFAULT_MAX_EVIDENCE_PER_CLAIM: int = 8
+DEFAULT_MAX_EVIDENCE_PER_REF: int = 3
 YEAR_MIN: int = 1900
 YEAR_MAX: int = 2100
 STRUCTURE_NOISE_MAX_ORDINAL: int = 12  # 结构行噪声的最大序号（1~12 视为标题/列表序号，非真实数值）
+NUMBER_SEQUENCE_MIN_COUNT: int = 3  # 纯数字序列行（坐标轴/刻度）至少连续 3 个数字
+NUMBER_SEQUENCE_MAX_CHARS: int = 160  # 超长行不按刻度行处理，避免误伤长表
 STRUCTURE_LINE_RE = re.compile(
     r"^\s*(?:#{1,6}\s|[(（]\d{1,2}[)）]\s?|\d{1,2}\s*[.、)）]\s|\[\d{1,2}\]\s?)"
 )  # 结构行：markdown 标题 / 数字序号 / [数字]；**不含** -/* 列表符号（列表项常含真实断言）
+_NUMBER_SEQUENCE_LINE_RE = re.compile(r"^[\s\d.,，、+\-~—–/|:：;；()（）\[\]]+$")
+_TEXT_UNIT_RE = re.compile(r"[A-Za-z\u4e00-\u9fff]")
+_PERCENT_UNIT_RE = re.compile(r"[%％‰]")
 SENTENCE_DELIMITERS: str = "。！？!?；;\n"
 FULL_TEXT_PAYLOAD_ENV: str = "CITATION_FULL_TEXT_IN_PAYLOAD"
 UNIT_TOKENS: Tuple[str, ...] = ("元", "万", "亿", "%", "％", "倍", "个百分点")
@@ -86,6 +91,25 @@ DEFAULT_PRODUCT_TOP_PER_REF: int = 3  # 产品层单条 claim 在单条引用里
 # SQL 材料容差匹配的换算量级（行值 x 量级 ~= 答案值）
 TOLERANCE_MULTIPLIERS: Tuple[float, ...] = (1.0, 10.0, 100.0, 10000.0, 0.1, 0.01, 0.0001)
 _NUMBER_TOKEN_RE = re.compile(r"-?\d+(?:\.\d+)?")
+CURRENCY_UNIT_SCALES: Dict[str, float] = {
+    "元": 1.0,
+    "万元": 10_000.0,
+    "百万元": 1_000_000.0,
+    "千万元": 10_000_000.0,
+    "亿元": 100_000_000.0,
+}
+_UNIT_TOKEN_RE = re.compile(r"亿元|百万元|千万元|万元|元|%|％|倍|个百分点")
+# 表头常把单位排版成“亿 元”“万 元”；单位识别需容忍中间空白，
+# 否则 `最新市 值(亿 元)` 会被判成“无单位”，金额换算与行内数字都无法命中。
+_UNIT_TOKEN_LOOSE_RE = re.compile(r"亿\s*元|百万\s*元|千万\s*元|万\s*元|元|%|％|倍|个百分点")
+_QUARTER_TOKEN_RE = re.compile(
+    r"(?<!\d)(?:20\d{2}\s*年?\s*)?(?:[Qq][1-4]|[Hh][12])(?!\d)"
+)
+_STOCK_CODE_CONTEXT_RE = re.compile(r"代码[:：]\s*(\d{3,6})")
+_CITED_TABLE_RE = re.compile(r"表[:：]\s*([^｜】\[\]]+?\.md#t\d+)")
+IDENTIFIER_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:[A-Z]{2,8}\d{2,6}|[tT]\d{1,3})(?![A-Za-z0-9])"
+)  # 药品/项目代码（PZH2108）与引用标记（t2）：标识符，不是财务数字
 TRUTHY: Tuple[str, ...] = ("1", "true", "yes", "on")
 UNABLE_LOCATE_NOTE: str = "未能回文定位（LLM 非逐字摘录），claim 偏移记为 -1"
 NO_EMBED_NOTE: str = "未注入 embed，观点证据未定位"
@@ -394,6 +418,40 @@ def is_year_like(token: str) -> bool:
     return YEAR_MIN <= int(token) <= YEAR_MAX
 
 
+def is_number_sequence_noise(text: str, numbers: Sequence[str]) -> bool:
+    """判断一条 claim 是否只是坐标轴/刻度行（纯数字序列）。
+
+    典型噪声：答案里的 ASCII 柱状图坐标轴 ``0 1000 2000 3000 4000`` 会被抽成
+    数字 claim，但它没有任何指标名或单位，不是可核验的答案断言。判定为**同时满足**：
+
+    1. 至少 ``NUMBER_SEQUENCE_MIN_COUNT`` 个数字；
+    2. 去掉首尾空白后只含数字与分隔符（空格、逗号、顿号、竖线、括号、冒号等）；
+    3. 不含中英文文字（无指标名）；
+    4. 不含 ``%`` / ``％`` / ``‰``（无单位）。
+
+    含任一文字或单位即保留：``营收 0 1000 2000``、``0% 10% 20%`` 均不判噪声。
+
+    Args:
+        text: 断言原文（通常是一行）
+        numbers: 该断言命中的数字（已按年份口径过滤）
+
+    Returns:
+        是否为纯数字序列行（True 表示应丢弃）
+    """
+    # `extract_numbers` 会把“0        1000”这类多空格刻度折叠成“01000”，
+    # 导致 numbers 只剩 2 个。这里按**原始文本**的数字 token 再数一次，
+    # 避免 ASCII 坐标轴因折叠而漏过噪声判定。
+    raw_numbers = re.findall(r"\d+(?:\.\d+)?", (text or "").strip())
+    if max(len(numbers or []), len(raw_numbers)) < NUMBER_SEQUENCE_MIN_COUNT:
+        return False
+    stripped = (text or "").strip()
+    if not stripped or len(stripped) > NUMBER_SEQUENCE_MAX_CHARS:
+        return False
+    if _TEXT_UNIT_RE.search(stripped) or _PERCENT_UNIT_RE.search(stripped):
+        return False
+    return bool(_NUMBER_SEQUENCE_LINE_RE.fullmatch(stripped))
+
+
 def is_structure_noise(text: str, numbers: Sequence[str]) -> bool:
     """判断一条 claim 是否只是 markdown 结构行（标题 / 序号）造成的数字噪声。
 
@@ -402,6 +460,10 @@ def is_structure_noise(text: str, numbers: Sequence[str]) -> bool:
 
     1. 该行是结构行（``#{1,6}`` 标题 / ``1.`` 序号 / ``[1]``），**不含** ``-`` / ``*`` 列表符号；
     2. 该行数字**全部**是小整数序号（1 ~ ``STRUCTURE_NOISE_MAX_ORDINAL``）。
+
+    另有一类**纯数字序列行**（ASCII 图表坐标轴 ``0 1000 2000 3000 4000``）：
+    无指标名、无单位、连续 3 个以上数字，同样不是答案断言，见
+    ``is_number_sequence_noise``。
 
     含任一真实数值就不判噪声：``1. 公司营收 12.3 亿元``（12.3 非小整数）保留、
     ``### 2024 年营收 12.3 亿元`` 保留；``- 2 家公司净利润为负`` 因不是结构行也保留。
@@ -415,6 +477,8 @@ def is_structure_noise(text: str, numbers: Sequence[str]) -> bool:
     """
     if not numbers or not text:
         return False
+    if is_number_sequence_noise(text, numbers):
+        return True
     if not STRUCTURE_LINE_RE.match(text):
         return False
     for num in numbers:
@@ -423,6 +487,160 @@ def is_structure_noise(text: str, numbers: Sequence[str]) -> bool:
         if not (1 <= int(num) <= STRUCTURE_NOISE_MAX_ORDINAL):
             return False
     return True
+
+
+def mask_quarter_tokens(text: str) -> str:
+    """遮罩季度/半年度 token 中的数字（保持字符偏移不变）。
+
+    ``2025Q3`` / ``2025H1`` 里的尾数字不是财务数值；直接替换为等长空格，避免它进入
+    数字 claim，也避免在证据配额里挤掉真正的财务数字。
+
+    Args:
+        text: 原文
+
+    Returns:
+        等长遮罩后的文本
+    """
+    return _QUARTER_TOKEN_RE.sub(lambda m: " " * (m.end() - m.start()), text or "")
+
+
+def mask_identifier_tokens(text: str) -> str:
+    """等长遮罩药品/项目代码与引用标记，避免其数字进入财务 claim。
+
+    Args:
+        text: 原文
+
+    Returns:
+        遮罩后文本（长度不变，字符偏移可直接复用）
+    """
+    return IDENTIFIER_TOKEN_RE.sub(lambda m: " " * (m.end() - m.start()), text or "")
+
+
+def stock_code_numbers(text: str) -> set[str]:
+    """抽取 ``代码：423`` 这类股票代码数字（不参与财务数字 claim）。
+
+    股票代码是标识符而不是金额/比例；前导零在展示层可能被省略（``423`` vs
+    ``000423``），不能按普通财务数字做 faithfulness 核验。
+
+    Args:
+        text: 原文
+
+    Returns:
+        代码数字集合（保留原字符串，如 ``{"423", "538"}``）
+    """
+    return {m.group(1) for m in _STOCK_CODE_CONTEXT_RE.finditer(text or "")}
+
+
+def extract_cited_table_ids(text: str) -> set[str]:
+    """从 claim 文本的引用标记中提取 ``file.md#tN`` 形式的表 ID。
+
+    例：``【公司：太极集团｜表：多因素致业绩承压.md#t4】`` -> ``{"多因素致业绩承压.md#t4"}``。
+    用于把 claim 的证据窗口限定在它自己引用的表，避免同题其他公司的表串进来。
+
+    Args:
+        text: claim 原文
+
+    Returns:
+        表 ID 集合
+    """
+    return {m.group(1).strip() for m in _CITED_TABLE_RE.finditer(text or "")}
+
+
+def _table_key(value: str) -> str:
+    """把路径/表 ID 归一化为可比较的文件名+#tN。"""
+    text = (value or "").replace("\\", "/").strip()
+    if not text:
+        return ""
+    return text.rsplit("/", 1)[-1]
+
+
+def _ref_matches_cited(ref: Dict[str, Any], cited_ids: set[str]) -> bool:
+    """判断一条材料是否命中 claim 引用的表。"""
+    if not cited_ids:
+        return False
+    table_id = _table_key(str(ref.get("table_id") or ""))
+    path = _table_key(str(ref.get("paper_path") or ""))
+    for cited in cited_ids:
+        key = _table_key(cited)
+        if table_id and table_id == key:
+            return True
+        if path and (path == key or path == key.split("#", 1)[0]):
+            return True
+    return False
+
+
+def _unit_near(text: str, number: str) -> Optional[str]:
+    """找数字附近最近的单位 token（先看数字后，再看数字前）。"""
+    source = text or ""
+    needle = (number or "").strip()
+    if not source or not needle:
+        return None
+    best: Optional[Tuple[int, int, str]] = None
+    for m in re.finditer(re.escape(needle), source):
+        left = max(0, m.start() - 40)
+        right = min(len(source), m.end() + 40)
+        window = source[left:right]
+        for u in _UNIT_TOKEN_LOOSE_RE.finditer(window):
+            absolute = left + u.start()
+            # 距离越近越好；同距离时优先数字后的单位（如 "123.86 亿元"）
+            distance = min(abs(absolute - m.start()), abs(absolute - m.end()))
+            after_penalty = 0 if absolute >= m.end() else 1
+            candidate = (distance, after_penalty, re.sub(r"\s+", "", u.group(0)))
+            if best is None or candidate < best:
+                best = candidate
+    return best[2] if best else None
+
+
+def detect_material_unit(text: str) -> Optional[str]:
+    """从整表标题/表头推断默认单位（行内无单位时继承）。
+
+    只看前 2,000 字符，并按长单位优先，避免 ``百万元`` 被 ``元`` 抢先命中。
+    这张表默认只取一个金额单位；百分比/倍数仍走数字精确匹配。
+    """
+    # 表头常见“亿 元”“万 元”排版；先去掉空白再识别单位。
+    head = re.sub(r"\s+", "", (text or "")[:2000])
+    for unit in ("亿元", "百万元", "千万元", "万元", "元"):
+        if unit in head:
+            return unit
+    for unit in ("%", "％", "倍", "个百分点"):
+        if unit in head:
+            return unit
+    return None
+
+
+def _unit_equivalent(
+    number: str,
+    claim_text: str,
+    candidate: str,
+    evidence_text: str,
+    default_unit: Optional[str],
+) -> bool:
+    """判断两个数字是否在金额单位换算 + 展示精度内相等。
+
+    只在双方都能识别为人民币金额单位时启用；``21.21 倍`` 不会被 ``万元`` 误命中。
+    """
+    a_unit = _unit_near(claim_text, number)
+    # 表格行可能同时含金额与百分比（``560.93 | 0.72%``）；若答案数字是金额，
+    # 必须优先用**整表默认金额单位**，不能让行内最近的 ``%`` 抢走单位。
+    if a_unit in CURRENCY_UNIT_SCALES and default_unit in CURRENCY_UNIT_SCALES:
+        b_unit = default_unit
+    else:
+        b_unit = _unit_near(evidence_text, candidate) or default_unit
+    a_scale = CURRENCY_UNIT_SCALES.get(a_unit or "")
+    b_scale = CURRENCY_UNIT_SCALES.get(b_unit or "")
+    if a_scale is None or b_scale is None:
+        return False
+    try:
+        # 金额符号可能只在源表出现（如“资产减值损失 -43.19 百万元”对
+        # 答案“4319 万元”），单位换算按绝对值比较，符号由业务语义另行判断。
+        target = abs(float(number.replace(",", "")) * a_scale)
+        value = abs(float(candidate.replace(",", "")) * b_scale)
+    except ValueError:
+        return False
+    decimals = _decimals_of(number)
+    # 答案末位半个单位（如 24.85 -> 0.005 亿元）与 0.5% 相对容差取较大者
+    tolerance = max(0.5 * (10 ** -decimals) * a_scale, abs(target) * 0.005)
+    return abs(target - value) <= tolerance
 
 
 def extract_number_claims(
@@ -446,7 +664,11 @@ def extract_number_claims(
     v = validator or default_validator()
     claims: List[Claim] = []
     for span in split_sentences(answer or ""):
-        nums = _dedup(v.extract_numbers(span.text))
+        # 季度 token 先等长遮罩；股票代码是标识符，不作为财务数字 claim。
+        masked = mask_quarter_tokens(mask_identifier_tokens(span.text))
+        code_numbers = stock_code_numbers(span.text)
+        nums = _dedup(v.extract_numbers(masked))
+        nums = [x for x in nums if x not in code_numbers]
         if drop_year_like:
             nums = [x for x in nums if not is_year_like(x)]
         if nums and drop_structure_noise and is_structure_noise(span.text, nums):
@@ -644,13 +866,17 @@ def _number_evidence(
     numbers = list(claim.numbers or [])
     if not numbers:
         return [], 0
+    cited_ids = extract_cited_table_ids(claim.text)
     out: List[Evidence] = []
+    cited_out: List[Evidence] = []
     for ref in references or []:
         full = ref_text(ref)
         if not full:
             continue
         is_sql = bool(ref.get("is_sql_material"))
+        default_unit = detect_material_unit(full)
         need_unit = require_unit_context and not is_sql
+        is_cited = _ref_matches_cited(ref, cited_ids)
         sentences = split_sentences(full)
         if not sentences:
             continue
@@ -660,12 +886,27 @@ def _number_evidence(
             matched: List[str] = []
             exact = False
             for num in numbers:
-                ok, variant_only = _match_number(v, num, normalized, accept_unit_variants)
+                if accept_unit_variants:
+                    ok, variant_only = _match_number_with_context(
+                        v, num, normalized, span.text, claim.text, default_unit
+                    )
+                else:
+                    ok, variant_only = _match_number(v, num, normalized, False)
                 if ok:
                     matched.append(num)
                     if not variant_only:
                         exact = True
-            if matched and (not need_unit or has_unit_context(span.text)):
+            # 表格行常把单位只写在表头/图注；若答案数字自带百分比单位，
+            # 行内裸数字仍可作为证据（B2002 的“涨幅 2.17%”命中排行表行）。
+            matched_units = {_unit_near(claim.text, n) for n in matched}
+            claim_percent = any(u in ("%", "％") for u in matched_units)
+            unit_ok = (
+                (not need_unit)
+                or bool(default_unit)
+                or has_unit_context(span.text)
+                or (not is_sql and claim_percent)
+            )
+            if matched and unit_ok:
                 hits[i] = (SCORE_EXACT_MATCH if exact else SCORE_UNIT_VARIANT, matched, [])
                 continue
             if is_sql and sql_number_tolerance:
@@ -701,8 +942,12 @@ def _number_evidence(
                     note="；".join(notes),
                 )
             )
-        out.extend(_select_evidence(ref_items, max_per_ref))
-    return _select_evidence(out, max_total), len(out)
+        selected = _select_evidence(ref_items, max_per_ref)
+        out.extend(selected)
+        if is_cited:
+            cited_out.extend(selected)
+    preferred = {id(e) for e in cited_out}
+    return _select_numeric_evidence(out, max_total, numbers, preferred), len(out)
 
 
 def build_unit_index(
@@ -807,6 +1052,43 @@ def _select_evidence(items: List[Evidence], limit: int) -> List[Evidence]:
         items, key=lambda e: (-e.score, len(e.text), e.paper_path, e.start)
     )[:limit]
     return sorted(picked, key=lambda e: (e.paper_path, e.start))
+
+
+def _select_numeric_evidence(
+    items: List[Evidence],
+    limit: int,
+    numbers: Sequence[str],
+    preferred_ids: Optional[set[int]] = None,
+) -> List[Evidence]:
+    """数字证据配额选择：优先覆盖更多数字，其次引用表、分数和片段长度。
+
+    单 claim 的 5/8 条配额不应被同一个季度数字或同一张表的重复命中占满；这里按
+    ``matched_numbers`` 的边际覆盖量贪心选择，并优先 claim 自己引用的表。
+    """
+    if not items:
+        return []
+    if limit is None or limit <= 0:
+        return sorted(items, key=lambda e: (e.paper_path, e.start))
+    target = set(numbers or [])
+    preferred_ids = preferred_ids or set()
+    remaining = list(items)
+    selected: List[Evidence] = []
+    covered: set[str] = set()
+    while remaining and len(selected) < limit:
+        def _key(e: Evidence) -> Tuple[int, int, float, int]:
+            new_cover = len((set(e.matched_numbers) & target) - covered)
+            return (
+                new_cover,
+                1 if id(e) in preferred_ids else 0,
+                e.score,
+                -len(e.text),
+            )
+
+        best = max(remaining, key=_key)
+        selected.append(best)
+        covered |= set(best.matched_numbers) & target
+        remaining.remove(best)
+    return sorted(selected, key=lambda e: (e.paper_path, e.start))
 
 
 def _has_number_token(haystack: str, needle: str) -> bool:
@@ -992,6 +1274,24 @@ def _match_number(
         return True, False
     for variant in validator.unit_variants(number):
         if is_plausible_variant(variant, base=number) and _has_number_token(normalized, variant):
+            return True, True
+    return False, False
+
+
+def _match_number_with_context(
+    validator: CitationValidator,
+    number: str,
+    normalized: str,
+    raw_text: str,
+    claim_text: str,
+    default_unit: Optional[str],
+) -> Tuple[bool, bool]:
+    """匹配数字：精确/原单位换算之外，再尝试金额单位双向换算。"""
+    ok, variant_only = _match_number(validator, number, normalized, True)
+    if ok:
+        return ok, variant_only
+    for candidate in _NUMBER_TOKEN_RE.findall(raw_text or ""):
+        if _unit_equivalent(number, claim_text, candidate, raw_text, default_unit):
             return True, True
     return False, False
 

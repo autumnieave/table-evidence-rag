@@ -327,3 +327,93 @@ def test_stream_meta_contains_references(api_env) -> None:
     assert metas
     assert metas[0]["references"] == [{"paper_path": "stub.md", "text": "研报原文"}]
     assert metas[0]["chart_json"] == {"type": "line"}
+
+
+# ── API key 鉴权 / 限流 ───────────────────────────────────────────────
+def _restore_attr(obj: Any, name: str, value: Any) -> None:
+    if value is None:
+        if hasattr(obj, name):
+            delattr(obj, name)
+    else:
+        setattr(obj, name, value)
+
+
+def test_api_auth_missing_key_401(api_env) -> None:
+    client, api_module, stub_cfg, _ = api_env
+    old_keys = getattr(stub_cfg, "API_KEYS", None)
+    old_enabled = getattr(stub_cfg, "API_AUTH_ENABLED", None)
+    stub_cfg.API_KEYS = "night-key"
+    stub_cfg.API_AUTH_ENABLED = True
+    api_module.reset_api_rate_limiter()
+    try:
+        resp = client.post("/chat", json={"question": "无 key"})
+        assert resp.status_code == 401
+        assert resp.json()["detail"] == "missing api key"
+    finally:
+        _restore_attr(stub_cfg, "API_KEYS", old_keys)
+        _restore_attr(stub_cfg, "API_AUTH_ENABLED", old_enabled)
+
+
+def test_api_auth_invalid_key_403(api_env) -> None:
+    client, api_module, stub_cfg, _ = api_env
+    old_keys, old_enabled = getattr(stub_cfg, "API_KEYS", None), getattr(stub_cfg, "API_AUTH_ENABLED", None)
+    stub_cfg.API_KEYS = "night-key"
+    stub_cfg.API_AUTH_ENABLED = True
+    api_module.reset_api_rate_limiter()
+    try:
+        resp = client.post("/chat", json={"question": "错 key"}, headers={"X-API-Key": "wrong"})
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "invalid api key"
+    finally:
+        _restore_attr(stub_cfg, "API_KEYS", old_keys)
+        _restore_attr(stub_cfg, "API_AUTH_ENABLED", old_enabled)
+
+
+def test_api_auth_valid_key_passes(api_env) -> None:
+    client, api_module, stub_cfg, _ = api_env
+    old_keys, old_enabled = getattr(stub_cfg, "API_KEYS", None), getattr(stub_cfg, "API_AUTH_ENABLED", None)
+    stub_cfg.API_KEYS = "night-key"
+    stub_cfg.API_AUTH_ENABLED = True
+    api_module.reset_api_rate_limiter()
+    try:
+        resp = client.post("/chat", json={"question": "有 key"}, headers={"X-API-Key": "night-key"})
+        assert resp.status_code == 200
+    finally:
+        _restore_attr(stub_cfg, "API_KEYS", old_keys)
+        _restore_attr(stub_cfg, "API_AUTH_ENABLED", old_enabled)
+
+
+def test_api_rate_limit_429(api_env) -> None:
+    client, api_module, stub_cfg, _ = api_env
+    old_keys = getattr(stub_cfg, "API_KEYS", None)
+    old_enabled = getattr(stub_cfg, "API_AUTH_ENABLED", None)
+    old_limit = getattr(stub_cfg, "API_RATE_LIMIT_PER_MINUTE", None)
+    stub_cfg.API_KEYS = "rate-key"
+    stub_cfg.API_AUTH_ENABLED = True
+    stub_cfg.API_RATE_LIMIT_PER_MINUTE = 2
+    api_module.reset_api_rate_limiter()
+    try:
+        headers = {"Authorization": "Bearer rate-key"}
+        assert client.post("/chat", json={"question": "r1"}, headers=headers).status_code == 200
+        assert client.post("/chat", json={"question": "r2"}, headers=headers).status_code == 200
+        resp = client.post("/chat", json={"question": "r3"}, headers=headers)
+        assert resp.status_code == 429
+        assert resp.json()["detail"] == "rate limit exceeded"
+        assert "Retry-After" in resp.headers
+    finally:
+        _restore_attr(stub_cfg, "API_KEYS", old_keys)
+        _restore_attr(stub_cfg, "API_AUTH_ENABLED", old_enabled)
+        _restore_attr(stub_cfg, "API_RATE_LIMIT_PER_MINUTE", old_limit)
+        api_module.reset_api_rate_limiter()
+
+
+def test_health_is_exempt_from_api_key(api_env) -> None:
+    client, _, stub_cfg, _ = api_env
+    old_keys, old_enabled = getattr(stub_cfg, "API_KEYS", None), getattr(stub_cfg, "API_AUTH_ENABLED", None)
+    stub_cfg.API_KEYS = "night-key"
+    stub_cfg.API_AUTH_ENABLED = True
+    try:
+        assert client.get("/health").status_code == 200
+    finally:
+        _restore_attr(stub_cfg, "API_KEYS", old_keys)
+        _restore_attr(stub_cfg, "API_AUTH_ENABLED", old_enabled)

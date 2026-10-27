@@ -11,6 +11,7 @@ import pytest
 from tools.claim_evidence_locator import (
     STRUCTURE_NOISE_MAX_ORDINAL,
     extract_number_claims,
+    is_number_sequence_noise,
     is_structure_noise,
     locate_answer,
     locate_claims_per_reference,
@@ -54,6 +55,38 @@ REF = {
 )
 def test_is_structure_noise(text, numbers, expected):
     assert is_structure_noise(text, numbers) is expected
+
+
+@pytest.mark.parametrize(
+    "text,numbers,expected",
+    [
+        # ASCII 柱状图坐标轴：无指标名、无单位、连续 3+ 数字 -> 噪声
+        ("             0        1000       2000       3000       4000\n",
+         ["0", "1000", "2000", "3000", "4000"], True),
+        # 回归：L1 的空格折叠会把“0  1000”折成“01000”，numbers 只剩 2 个；
+        # 噪声判定必须按原始 token 再数一次，否则轴行会漏过。
+        ("             0        1000       2000       3000\n",
+         ["01000", "3000"], True),
+        ("0, 1000, 2000", ["0", "1000", "2000"], True),
+        ("| 0 | 1000 | 2000 |", ["0", "1000", "2000"], True),
+        # 少于 3 个数字 -> 保留
+        ("0 1000", ["0", "1000"], False),
+        # 含指标名 -> 保留
+        ("营收 0 1000 2000", ["0", "1000", "2000"], False),
+        # 含单位 -> 保留
+        ("0% 10% 20%", ["0", "10", "20"], False),
+        # 空值安全
+        ("", ["0", "1000", "2000"], False),
+    ],
+)
+def test_is_number_sequence_noise(text, numbers, expected):
+    assert is_number_sequence_noise(text, numbers) is expected
+
+
+def test_extract_number_claims_drops_ascii_axis_row():
+    answer = "```\n+------------------------>\n0   1000   2000   3000   4000\n```\n"
+    claims = extract_number_claims(answer)
+    assert not any("1000" in c.numbers and "4000" in c.numbers for c in claims)
 
 
 def test_extract_number_claims_drops_structure_noise_by_default():

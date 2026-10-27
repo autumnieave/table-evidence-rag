@@ -6,6 +6,14 @@ from .entity_gate import (
     name_matches,
     resolve_names,
 )
+from .period_gate import (
+    PERIOD_KEY_BY_DOC_TYPE,
+    matches_period,
+    period_key,
+    period_key_name,
+    period_quarter,
+    period_year,
+)
 from .query_filters import QueryFilters
 from .row_gate import (
     METRIC_TERMS,
@@ -26,4 +34,10 @@ __all__ = [
     "is_lowinfo_row",
     "is_rowlike",
     "METRIC_TERMS",
+    "PERIOD_KEY_BY_DOC_TYPE",
+    "period_key_name",
+    "period_key",
+    "period_year",
+    "period_quarter",
+    "matches_period",
 ]

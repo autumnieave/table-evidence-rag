@@ -13,10 +13,17 @@ from typing import Optional
 from config.rag_config import RAGConfig, get_config as _get_config
 from pipelines.rag_pipeline import RAGPipeline
 
-__all__ = ["RAGConfig", "RAGPipeline", "get_config", "get_pipeline"]
+__all__ = [
+    "RAGConfig",
+    "RAGPipeline",
+    "get_config",
+    "get_pipeline",
+    "get_multi_stage_runtime",
+]
 
 _lock = threading.Lock()
 _pipeline: Optional[RAGPipeline] = None
+_multi_stage_runtime = None
 
 
 def get_config() -> RAGConfig:
@@ -32,3 +39,15 @@ def get_pipeline() -> RAGPipeline:
             if _pipeline is None:
                 _pipeline = RAGPipeline(get_config())
     return _pipeline
+
+
+def get_multi_stage_runtime():
+    """懒加载多阶段检索运行时单例（表级 BM25 常驻 + 词表自动加载）。"""
+    global _multi_stage_runtime
+    if _multi_stage_runtime is None:
+        with _lock:
+            if _multi_stage_runtime is None:
+                from core.multi_stage_runtime import build_multi_stage_runtime
+
+                _multi_stage_runtime = build_multi_stage_runtime(get_config())
+    return _multi_stage_runtime

@@ -13,6 +13,7 @@ import pickle
 import random
 import logging
 import threading
+import contextvars
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from pathlib import Path
@@ -38,6 +39,8 @@ from core.interfaces import IGenerator, IReranker, IRetriever
 from core.retrievers import BM25Retriever, HandwrittenRetriever, HybridRetriever, LangChainRetriever
 from core.rerankers import RerankerAdapter, apply_file_diversity, file_keys_from_candidates
 from core.generators import GeneratorAdapter
+from core.evidence_context import build_evidence_context
+from utils.observability import get_trace
 
 
 # === Missing imports from refactored modules ===
@@ -643,6 +646,32 @@ class RAGPipeline:
                 index_map[new_idx] = i
 
         return new_candidate_docs, search_results, aggregated_meta, index_map
+
+    def _build_candidate_contexts(
+        self,
+        search_results: List[Dict[str, Any]],
+        candidate_docs: List[str],
+        aggregated_meta: Dict[int, Dict[str, Any]],
+        agg_index_map: Dict[int, int],
+    ) -> List[str]:
+        """按候选索引拼“元数据 + 正文”，供生成使用。
+
+        只影响生成上下文；rerank 仍用 ``candidate_docs`` 正文，引用构建仍用完整
+        ``candidate_docs``，因此不会改变既有引用口径。
+        """
+        contexts: List[str] = []
+        for i, doc in enumerate(candidate_docs):
+            if agg_index_map and i in agg_index_map:
+                original = search_results[agg_index_map[i]]["payload"]
+            elif i < len(search_results):
+                original = search_results[i]["payload"]
+            else:
+                original = {}
+            payload = dict(original)
+            if aggregated_meta and i in aggregated_meta:
+                payload.update(aggregated_meta[i])
+            contexts.append(build_evidence_context(doc, payload))
+        return contexts
     
     def _generate_summaries(self, texts: List[str], batch_size: int = 20) -> List[str]:
         """
@@ -719,12 +748,14 @@ class RAGPipeline:
             table_slice_rows=self.config.TABLE_SLICE_ROWS,
             table_slice_max_chars=getattr(self.config, "TABLE_SLICE_MAX_CHARS", 0),
             strip_boilerplate=getattr(self.config, "BOILERPLATE_STRIP_ENABLED", False),
+            row_fact_mode=getattr(self.config, "TABLE_ROW_FACT_MODE", "off"),
         )
         # ----- 为非表格行生成摘要 -----
         non_table_texts = []
         non_table_indices = []
         for idx, chunk in enumerate(chunks):
-            if not chunk["metadata"].get("is_table_row", False):
+            if (not chunk["metadata"].get("is_table_row", False)
+                    and chunk["metadata"].get("chunk_type") not in ("table", "row_fact", "boilerplate")):
                 non_table_texts.append(chunk["content"])
                 non_table_indices.append(idx)
 
@@ -782,6 +813,7 @@ class RAGPipeline:
             table_slice_rows=self.config.TABLE_SLICE_ROWS,
             table_slice_max_chars=getattr(self.config, "TABLE_SLICE_MAX_CHARS", 0),
             strip_boilerplate=getattr(self.config, "BOILERPLATE_STRIP_ENABLED", False),
+            row_fact_mode=getattr(self.config, "TABLE_ROW_FACT_MODE", "off"),
         )
 
         if not chunks:
@@ -791,7 +823,8 @@ class RAGPipeline:
         # 3. 为非表格块生成摘要（与 build_index 行为一致）
         non_table_texts, non_table_indices = [], []
         for idx, chunk in enumerate(chunks):
-            if not chunk["metadata"].get("is_table_row", False):
+            if (not chunk["metadata"].get("is_table_row", False)
+                    and chunk["metadata"].get("chunk_type") not in ("table", "row_fact", "boilerplate")):
                 non_table_texts.append(chunk["content"])
                 non_table_indices.append(idx)
         if non_table_texts:
@@ -1056,6 +1089,8 @@ class RAGPipeline:
         return self.agent_planner
 
     def agent_query(self, question: str, user_id: str = "default", verbose: bool = True, on_stage: Optional[Callable[[str], None]] = None, on_chunk: Optional[Callable[[str], None]] = None) -> dict:
+        trace = get_trace()
+        agent_started = time.perf_counter()
         # B-28 错字归一化（Agent 入口统一处理，覆盖 handwritten / langgraph 两后端）：
         # 在拆解前还原公司简称/指标错字（云白要→云南白药、资产负债绿→资产负债率 等），
         # 避免 supervisor 先改写错字导致后续无法纠回（C2011 根因）
@@ -1092,6 +1127,10 @@ class RAGPipeline:
             on_chunk=on_chunk,
         )
         # answer 现在是字典
+        if trace is not None:
+            trace.record_stage("agent_total_ms", (time.perf_counter() - agent_started) * 1000.0)
+            trace.extra["agent_backend"] = getattr(self.config, "AGENT_PLANNER_BACKEND", None)
+            trace.extra["multi_agent"] = bool(getattr(self.config, "AGENT_LANGGRAPH_MULTI_AGENT", False))
         # claim 级引用定位：聚合答案与各子链路引用在此刻才齐备，就地补 ref["claims"]
         self._annotate_reference_claims(answer)
         state.history.append({"role": "user", "content": question})
@@ -1249,12 +1288,13 @@ class RAGPipeline:
             self.config.RERANK_MAX_PER_FILE,
         )
 
+        candidate_contexts = self._build_candidate_contexts(
+            search_results, candidate_docs, aggregated_meta, agg_index_map
+        )
         final_contexts = []
         for item in rerank_results:
-            doc_text = item.get("document")
-            if not doc_text:
-                idx = item["index"]
-                doc_text = candidate_docs[idx] if idx < len(candidate_docs) else ""
+            idx = item["index"]
+            doc_text = candidate_contexts[idx] if idx < len(candidate_contexts) else ""
             final_contexts.append(doc_text)
 
         if verbose:
@@ -1285,6 +1325,8 @@ class RAGPipeline:
         默认手写链路（由 IRetriever/IReranker/IGenerator 接口编排）；
         use_langchain_chain / use_langchain_retriever 为实验开关，仅调试用。
         """
+        trace = get_trace()
+        query_started = time.perf_counter()
         # 0. 【实验】LCEL 完整链路分支（跳过手写 Embedding/检索/Rerank/生成逻辑）
         if self.use_langchain_chain:
             print("[QUERY DEBUG] 进入 LCEL 分支")
@@ -1295,6 +1337,8 @@ class RAGPipeline:
                     self.langchain_rag_chain = LangChainRAGChain(retriever=retriever)
                 result = self.langchain_rag_chain.invoke(question)
                 print(f"[QUERY DEBUG] invoke 返回结果: {repr(result)}")
+                if trace is not None:
+                    trace.record_stage("query_total_ms", (time.perf_counter() - query_started) * 1000.0)
                 return {"content": result, "image": [], "references": []}
             except Exception as e:
                 import traceback
@@ -1310,9 +1354,15 @@ class RAGPipeline:
         filter_thread.start()
         query_filter = None  # 硬过滤已架空，仅保留软约束
 
+        t_retrieval = time.perf_counter()
         search_results = self._get_retriever().retrieve(question, query_filter=query_filter)
+        if trace is not None:
+            trace.record_stage("retrieval_ms", (time.perf_counter() - t_retrieval) * 1000.0)
+            trace.extra["retrieved_count"] = len(search_results)
         if not search_results and (self.use_langchain_retriever or self.use_hybrid_retriever):
             # 实验链路：空召回直接返回（与历史行为一致） 
+            if trace is not None:
+                trace.record_stage("query_total_ms", (time.perf_counter() - query_started) * 1000.0)
             return {"content": "未找到相关内容，请尝试其他问题。", "image": [], "references": []}
         # 过滤条件解析与检索并行：检索完成后等待其结束（超时则放弃软过滤）
         filter_thread.join(timeout=8.0)
@@ -1382,11 +1432,14 @@ class RAGPipeline:
             agg_index_map = {}
 
         # 5. Rerank 重排序（请求 oversample 条，再按每文件上限收敛回 RERANK_TOP_N）
+        t_rerank = time.perf_counter()
         rerank_results = self.reranker.rerank(
             query=question,
             documents=candidate_docs,
             top_n=self.config.RERANK_TOP_N * self.config.RERANK_OVERSAMPLE
         )
+        if trace is not None:
+            trace.record_stage("rerank_ms", (time.perf_counter() - t_rerank) * 1000.0)
         # 多样性按候选列表对齐文件键（聚合后 candidate_docs 与 search_results 索引不再一一对应）
         diversity_keys = (
             [search_results[agg_index_map[i]] for i in range(len(candidate_docs))] if agg_index_map else search_results
@@ -1399,24 +1452,23 @@ class RAGPipeline:
         )
 
         # 提取引用信息（取重排后前 N 条；先收集索引，稍后与生成并行构建）
+        candidate_contexts = self._build_candidate_contexts(
+            search_results, candidate_docs, aggregated_meta, agg_index_map
+        )
         final_contexts = []
         ref_indices = []
         if verbose:
             print(f"[重排序阶段] 保留前 {len(rerank_results)} 个最相关片段\n")
             for i, item in enumerate(rerank_results, 1):
                 print(f"  [{i}] 相关性分数: {item['relevance_score']:.4f}")
-                doc_text = item.get("document")
                 idx = item["index"]
-                if not doc_text:
-                    doc_text = candidate_docs[idx] if idx < len(candidate_docs) else ""
+                doc_text = candidate_contexts[idx] if idx < len(candidate_contexts) else ""
                 final_contexts.append(doc_text)
                 ref_indices.append(idx)
         else:
             for item in rerank_results:
-                doc_text = item.get("document")
                 idx = item["index"]
-                if not doc_text:
-                    doc_text = candidate_docs[idx] if idx < len(candidate_docs) else ""
+                doc_text = candidate_contexts[idx] if idx < len(candidate_contexts) else ""
                 final_contexts.append(doc_text)
                 ref_indices.append(idx)
 
@@ -1433,6 +1485,7 @@ class RAGPipeline:
         gen_box: Dict[str, Any] = {}
 
         def _generate_worker() -> None:
+            gen_started = time.perf_counter()
             try:
                 gen_box["text"] = self.generator.generate(
                     query=question,
@@ -1442,8 +1495,16 @@ class RAGPipeline:
                 )
             except Exception as e:  # noqa: BLE001
                 gen_box["error"] = e
+            finally:
+                gen_box["elapsed_ms"] = (time.perf_counter() - gen_started) * 1000.0
 
-        gen_thread = threading.Thread(target=_generate_worker, daemon=True)
+        t_generate = time.perf_counter()
+        # 复制 contextvars，让生成线程里的 LLMGenerator 能拿到同一个 RequestTrace
+        gen_thread = threading.Thread(
+            target=contextvars.copy_context().run,
+            args=(_generate_worker,),
+            daemon=True,
+        )
         gen_thread.start()
 
         # 引用构建与生成并行（内部多线程 + 图片标题缓存，避免 LLM 调用拖慢首 token）
@@ -1455,6 +1516,14 @@ class RAGPipeline:
             references = [f.result() for f in futures]
 
         gen_thread.join()
+        if trace is not None:
+            trace.record_stage("generate_ms", gen_box.get("elapsed_ms"))
+            trace.extra["generate_wait_overhead_ms"] = round(
+                (time.perf_counter() - t_generate) * 1000.0 - float(gen_box.get("elapsed_ms") or 0.0),
+                3,
+            )
+            trace.extra["context_count"] = len(final_contexts)
+            trace.extra["reference_count"] = len(references)
         if "error" in gen_box:
             raise gen_box["error"]
         answer_text = gen_box["text"]
@@ -1469,5 +1538,7 @@ class RAGPipeline:
             }
         # 6. claim 级引用定位：把每条引用对应到答案里的具体断言（产品层展示用）
         self._annotate_reference_claims(result)
+        if trace is not None:
+            trace.record_stage("query_total_ms", (time.perf_counter() - query_started) * 1000.0)
         return result
 

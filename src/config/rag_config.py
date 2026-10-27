@@ -22,6 +22,26 @@ def _env(name: str, default: str) -> str:
     return os.getenv(name, default)
 
 
+def _env_optional_float(name: str) -> Optional[float]:
+    """读取可选浮点环境变量；未设置或为空时返回 None（不猜默认单价）。"""
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("环境变量 %s=%r 不是合法浮点数，按未登记处理", name, raw)
+        return None
+
+
+def _env_optional_bool(name: str) -> Optional[bool]:
+    """读取可选布尔环境变量；未设置时返回 None（由调用方决定自动策略）。"""
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return None
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 class EmbeddingClientAdapter(Embeddings):
     """将 EmbeddingClient 包装为 LangChain Embeddings 接口，统一使用 text_type=query"""
 
@@ -73,6 +93,14 @@ class RAGConfig:
     # ── API 配置 ─────────────────────────────────────────────────────
     DASHSCOPE_API_KEY: Optional[str] = field(default_factory=lambda: os.getenv("DASHSCOPE_API_KEY") or None)
     """阿里云百炼 API Key"""
+    API_KEYS: str = field(default_factory=lambda: _env("API_KEYS", ""))
+    """允许访问 API 的 key，逗号分隔；为空时本地开发不启用鉴权"""
+    API_AUTH_ENABLED: Optional[bool] = field(default_factory=lambda: _env_optional_bool("API_AUTH_ENABLED"))
+    """显式鉴权开关；未设置时自动策略=API_KEYS 非空则启用"""
+    API_RATE_LIMIT_PER_MINUTE: int = field(default_factory=lambda: int(_env("API_RATE_LIMIT_PER_MINUTE", "10")))
+    """每个 key 每分钟允许的请求数（单进程内存滑动窗口）"""
+    API_AUTH_EXEMPT_PATHS: str = field(default_factory=lambda: _env("API_AUTH_EXEMPT_PATHS", "/health,/docs,/redoc,/openapi.json"))
+    """免鉴权路径，逗号分隔"""
     AGENT_PLANNER_BACKEND: str = field(default_factory=lambda: _env("AGENT_PLANNER_BACKEND", "handwritten"))
     """Agent 编排后端：handwritten=自研循环（默认）/ langgraph=StateGraph 版（实验）"""
     AGENT_ENABLE_THINKING: bool = field(default_factory=lambda: _env("AGENT_ENABLE_THINKING", "false").lower() == "true")
@@ -110,6 +138,18 @@ class RAGConfig:
     RERANK_MODEL: str = field(default_factory=lambda: _env("RERANK_MODEL", "qwen3-rerank"))
     """重排序模型名称 (DashScope)"""
 
+    # ── 可观测性 / 成本 ─────────────────────────────────────────────
+    OBSERVABILITY_LOG_ENABLED: bool = field(default_factory=lambda: _env("OBSERVABILITY_LOG_ENABLED", "true").lower() == "true")
+    """是否把每请求结构化日志写入 JSONL（默认开；测试/离线可关）"""
+    OBSERVABILITY_LOG_DIR: str = field(default_factory=lambda: _env("OBSERVABILITY_LOG_DIR", "训练结果数据/logs"))
+    """结构化日志目录；按 YYYYMMDD.jsonl 分文件"""
+    LLM_STREAM_INCLUDE_USAGE: bool = field(default_factory=lambda: _env("LLM_STREAM_INCLUDE_USAGE", "true").lower() == "true")
+    """流式调用是否请求 usage（DashScope OpenAI 兼容接口支持时；不支持会自动回退）"""
+    LLM_INPUT_PRICE_PER_1K: Optional[float] = field(default_factory=lambda: _env_optional_float("LLM_INPUT_PRICE_PER_1K"))
+    """输入 token 单价（元/千 token）；未登记时日志写 unit_price_not_registered"""
+    LLM_OUTPUT_PRICE_PER_1K: Optional[float] = field(default_factory=lambda: _env_optional_float("LLM_OUTPUT_PRICE_PER_1K"))
+    """输出 token 单价（元/千 token）；未登记时日志写 unit_price_not_registered"""
+
     # ── 混合检索（#8 实验）───────────────────────────────────────────
     HYBRID_ENABLED: bool = field(default_factory=lambda: _env("HYBRID_ENABLED", "true").lower() == "true")
     """是否默认启用混合检索（向量 + BM25），interactive 可用 hybrid on/off 切换（默认开启：实测 K=50+混合 为精排后最优组合）"""
@@ -123,6 +163,16 @@ class RAGConfig:
     """混合检索：融合结果中向量路文档保底比例（0=纯 RRF；0.8=top-K 至少 80% 来自向量路）"""
     BM25_INDEX_PATH: str = field(default_factory=lambda: _env("BM25_INDEX_PATH", "database/bm25_index.pkl"))
     """BM25 索引缓存路径（实际文件按 集合名+点数 后缀区分，自动重建）"""
+    TABLE_BM25_INDEX_PATH: str = field(default_factory=lambda: _env("TABLE_BM25_INDEX_PATH", "database/table_bm25_index.pkl"))
+    """表级 BM25 索引缓存路径（多阶段检索用，按 集合名+点数 后缀区分）"""
+    MULTI_STAGE_RETRIEVAL_ENABLED: bool = field(default_factory=lambda: _env("MULTI_STAGE_RETRIEVAL_ENABLED", "false").lower() == "true")
+    """是否启用多阶段检索运行时（默认关；开启后 API 启动预热表级 BM25/词表/检索链路）"""
+    SIBLING_TABLE_RECALL_ENABLED: bool = field(default_factory=lambda: _env("SIBLING_TABLE_RECALL_ENABLED", "false").lower() == "true")
+    """同文档兄弟表召回（默认关；同文件已选表不覆盖查询指标/期间/单位时，用同文件兄弟表替换最低排名表）"""
+    MULTI_STAGE_WARMUP_ENABLED: bool = field(default_factory=lambda: _env("MULTI_STAGE_WARMUP_ENABLED", "true").lower() == "true")
+    """多阶段检索启用时是否在启动阶段预热（关闭则首个请求承担冷启动）"""
+    MULTI_STAGE_WARMUP_ROUNDS: int = field(default_factory=lambda: int(_env("MULTI_STAGE_WARMUP_ROUNDS", "3")))
+    """预热轮数（每轮跑 通用/实体/短查询 三种形态；复用查询向量，不额外调 embedding）"""
 
     # ── 分块配置 ─────────────────────────────────────────────────────
     CHUNK_SIZE: int = field(default_factory=lambda: int(_env("CHUNK_SIZE", "1024")))
@@ -133,6 +183,8 @@ class RAGConfig:
     """分块最小长度 (字符数)：过短的相邻文本块会被合并，避免单字碎片入库；0 = 关闭（旧行为）。改这里必须同步 src/data/splitter.py 的 CHUNK_MIN_CHARS 并重建索引"""
     TABLE_CHUNK_MODE: str = field(default_factory=lambda: _env("TABLE_CHUNK_MODE", "legacy"))
     """表格入库口径：legacy=一行一个 chunk（现状，线上 v3_full 口径）；structured=一张表一个/若干 chunk（重构，需重建索引）"""
+    TABLE_ROW_FACT_MODE: str = field(default_factory=lambda: _env("TABLE_ROW_FACT_MODE", "off"))
+    """行级事实口径：off=只写 anchor_cells（默认，不影响现有检索）；chunks=额外生成 row_fact 子块（阶段 2/3，需重建索引）"""
     TABLE_SLICE_ROWS: int = field(default_factory=lambda: int(_env("TABLE_SLICE_ROWS", "40")))
     """结构化口径下单表切片行数上限（超长表按「表头重复 + 每 K 行」切片）"""
     TABLE_SLICE_MAX_CHARS: int = field(default_factory=lambda: int(_env("TABLE_SLICE_MAX_CHARS", "1200")))

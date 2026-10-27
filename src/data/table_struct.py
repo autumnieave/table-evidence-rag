@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """研报表格结构化（数据管道重构 · 第一步）。
 
 问题
@@ -64,6 +64,25 @@ UNIT_TO_YUAN: Dict[str, int] = {
 #: 常见简写 → 规范单位名
 UNIT_ALIASES: Dict[str, str] = {"万": "万元", "亿": "亿元", "百万": "百万元", "千": "千元"}
 
+#: 表格类型（阶段 1 契约；用于分层覆盖率与下游用例）
+TABLE_TYPES = (
+    "financial_statement", "valuation", "forecast", "industry_summary",
+    "ranking", "pipeline", "other",
+)
+
+#: 表格主体范围（阶段 1 契约）
+TABLE_SCOPES = ("stock", "industry", "mixed", "unknown")
+
+_PIPELINE_TERMS = ("管线", "靶点", "适应症", "临床", "获批", "药品名称", "药物", "疫苗", "器械", "上市申请")
+_RANKING_TERMS = ("排名", "排序", "涨幅", "跌幅", "涨跌幅", "TOP", "前5", "后5", "涨幅前", "涨幅后")
+_VALUATION_TERMS = ("估值", "PE", "P/E", "PB", "P/B", "市值", "目标价", "EPS", "股息率")
+_FORECAST_TERMS = ("预测", "盈利预测", "2024E", "2025E", "2026E", "2027E", "2028E")
+_STATEMENT_TITLE_TERMS = ("资产负债表", "利润表", "现金流量表", "财务摘要", "主要财务指标")
+_FIN_METRIC_TERMS = ("营业收入", "净利润", "归母净利润", "总资产", "净资产", "负债合计",
+                     "经营活动现金流", "每股收益", "EPS")
+_FIN_STATEMENT_TERMS = _STATEMENT_TITLE_TERMS + _FIN_METRIC_TERMS
+_INDUSTRY_SCOPE_TERMS = ("行业", "板块", "子板块", "行业汇总", "行业对比", "市场", "政策", "产业链", "景气度")
+
 #: 单表切片行数上限：超过则「表头重复 + 每 K 行」切片，保留行列语义
 TABLE_SLICE_ROWS: int = 40
 
@@ -86,27 +105,37 @@ _CODE_DOT_RE = re.compile(r"(?<!\d)(\d{6})\s*[.·。]?\s*(SZ|SH|BJ)(?![A-Za-z])"
 #: ``SZ300181`` / ``SH. 600519``
 _CODE_PRE_RE = re.compile(r"(SZ|SH|BJ)\s*[.·。]?\s*(\d{6})(?!\d)", re.IGNORECASE)
 
-_QUARTER_RE = re.compile(r"(20\d{2})\s*[Qq]([1-4])")
-_CN_QUARTER_RE = re.compile(r"(20\d{2})\s*年?\s*(?:第)?([一二三四1234])\s*季度")
-_HALF_RE = re.compile(r"(20\d{2})\s*[Hh]([12])(?![0-9])")
-_HALF_CN_RE = re.compile(r"(20\d{2})\s*年?\s*(?:中报|半年报|上半年)")
-_Q1_CN_RE = re.compile(r"(20\d{2})\s*年?\s*一季报")
-_ANNUAL_RE = re.compile(r"(20\d{2})\s*年?\s*(?:年度|年报|全年)")
-_YEAR_CN_RE = re.compile(r"(20\d{2})\s*年")
+#: 年份前缀：4 位（20xx）或 2 位（``24`` / ``19`` → 2024 / 2019）；``(?<!\d)`` 防从长数字里截取
+_YEAR_PAT = r"(?<!\d)((?:20\d{2}|[0-3]\d))"
+#: 强模式（必须带年期词，**可 2 位年**）—— 报告期的「强证据」
+_QUARTER_RE = re.compile(_YEAR_PAT + r"\s*年?\s*[Qq]([1-4])(?![0-9])")
+_CN_QUARTER_RE = re.compile(_YEAR_PAT + r"\s*年?\s*(?:第)?([一二三四1234])\s*季度")
+_HALF_RE = re.compile(_YEAR_PAT + r"\s*年?\s*[Hh]([12])(?![0-9])")
+_Q3_CN_RE = re.compile(_YEAR_PAT + r"\s*年?\s*(?:三季报|前三季度)")
+_HALF_CN_RE = re.compile(_YEAR_PAT + r"\s*年?\s*(?:中报|半年报|半年度|上半年)")
+_Q1_CN_RE = re.compile(_YEAR_PAT + r"\s*年?\s*一季报")
+_ANNUAL_RE = re.compile(_YEAR_PAT + r"\s*年?\s*(?:年度|年报|全年)")
+#: 弱模式（裸年份，**仅 4 位**）：单独出现不足以判定报告期（可能是发布年）
+_YEAR_CN_RE = re.compile(r"(20\d{2})\s*年(?!报)")
 
 _CJK_DIGIT: Dict[str, str] = {"一": "1", "二": "2", "三": "3", "四": "4"}
 
 #: 带括号的单位（``（万元）`` / ``(单位:亿元)``）；``（元/股）`` 这类复合单位不命中
 _UNIT_PAREN_RE = re.compile(
-    r"[（(【\[]\s*(?:单位\s*[:：]?)?\s*(十亿元|千万吨|千万元|百万元|十万元|千元|万元|亿元|万|亿|元)\s*[)）】\]]"
+    r"[（(【\[]\s*(?:单位\s*[:：]?)?\s*(?:人民币|港币|美元|RMB|CNY|元)?\s*"
+    r"(十亿元|千万吨|千万元|百万元|十万元|千元|万元|亿元|万|亿|元)\s*[)）】\]]"
 )
-#: ``单位：万元`` 这类显式标注
-_UNIT_LABEL_RE = re.compile(r"单位\s*[:：]\s*(十亿元|千万元|百万元|十万元|千元|万元|亿元|万|亿|元)")
+#: ``单位：万元`` / ``单位：人民币百万元`` 这类显式标注
+_UNIT_LABEL_RE = re.compile(
+    r"单位\s*[:：]\s*(?:人民币|港币|美元|RMB|CNY)?\s*(十亿元|千万元|百万元|十万元|千元|万元|亿元|万|亿|元)"
+)
 
 #: 表标题行（如「表1：2025Q3 主要财务指标」「图表 3 可比公司估值」）
 _CAPTION_RE = re.compile(r"^\s*(?:表|图表|图)\s*[0-9一二三四五六七八九十]+\s*[:：.、]?\s*\S")
 #: 表格来源 / 注释行（并入 caption，从正文剥离）
 _NOTE_RE = re.compile(r"^\s*(?:资料来源|数据来源|注|来源)\s*[:：]")
+#: 表下注释行（unit 回退链的 footnote 来源；比 caption 注释更宽，含「备注」）
+_FOOTNOTE_RE = re.compile(r"^\s*(?:资料来源|数据来源|注|备注|来源)\s*[:：]")
 #: 文本字符（汉字 / 拉丁字母）——用于把纯数字行排除在「分节标题行」之外
 _TEXT_CHAR_RE = re.compile(r"[A-Za-z\u4e00-\u9fff]")
 
@@ -191,30 +220,57 @@ def extract_stock_codes(text: str, limit: int = 20) -> List[str]:
     return found
 
 
-def extract_report_period(text: str) -> Optional[str]:
-    """识别报告期，返回规范写法 ``2025Q3`` / ``2025H1`` / ``2024A``（``A`` = 年报/全年）。"""
+def normalize_year(year: str) -> str:
+    """年份归一：2 位补世纪（``24`` → ``2024``，``98`` → ``1998``）。"""
+    if len(year) == 4:
+        return year
+    value = int(year)
+    return str(2000 + value if value < 50 else 1900 + value)
+
+
+def extract_report_period_strict(text: str) -> Optional[str]:
+    """**强口径**报告期：必须带年期词（``Q3`` / ``三季报`` / ``半年度`` / ``年报``…），**接受 2 位年**。
+
+    与 :func:`extract_report_period` 的区别：**不接受光秃秃的年份**（``2024年`` 可能是发布年），
+    因此可安全用于「正文里找报告期」这种容易误判的位置。返回 ``2025Q3`` / ``2025H1`` / ``2024A``。
+    """
     if not text:
         return None
     match = _QUARTER_RE.search(text)
     if match:
-        return "{}Q{}".format(match.group(1), match.group(2))
+        return "{}Q{}".format(normalize_year(match.group(1)), match.group(2))
     match = _CN_QUARTER_RE.search(text)
     if match:
         digit = _CJK_DIGIT.get(match.group(2), match.group(2))
-        return "{}Q{}".format(match.group(1), digit)
+        return "{}Q{}".format(normalize_year(match.group(1)), digit)
     match = _HALF_RE.search(text)
     if match:
-        return "{}H{}".format(match.group(1), match.group(2))
+        return "{}H{}".format(normalize_year(match.group(1)), match.group(2))
+    match = _Q3_CN_RE.search(text)
+    if match:
+        return "{}Q3".format(normalize_year(match.group(1)))
     match = _HALF_CN_RE.search(text)
     if match:
-        return "{}H1".format(match.group(1))
+        return "{}H1".format(normalize_year(match.group(1)))
     match = _Q1_CN_RE.search(text)
     if match:
-        return "{}Q1".format(match.group(1))
+        return "{}Q1".format(normalize_year(match.group(1)))
     match = _ANNUAL_RE.search(text)
     if match:
-        return "{}A".format(match.group(1))
-    match = _YEAR_CN_RE.search(text)
+        return "{}A".format(normalize_year(match.group(1)))
+    return None
+
+
+def extract_report_period(text: str) -> Optional[str]:
+    """识别报告期（**宽松口径**）：强口径 + 裸年份兜底（``2024年`` → ``2024A``）。
+
+    裸年份兜底只应用在**有报告类型词佐证**的位置（标题）；正文里请用
+    :func:`extract_report_period_strict`，否则会把发布年 / 叙述年份当成报告期。
+    """
+    period = extract_report_period_strict(text)
+    if period:
+        return period
+    match = _YEAR_CN_RE.search(text or "")
     if match:
         return "{}A".format(match.group(1))
     return None
@@ -553,8 +609,14 @@ class Table:
     """
     unit: Optional[str] = None
     unit_factor: int = 1
+    unit_source: str = "none"
+    """unit 来源：``cell`` / ``caption`` / ``footnote`` / ``none`` / ``multi``。"""
     unit_candidates: List[str] = field(default_factory=list)
     """表内出现过的全部单位；**恰好 1 个**时才写进 ``unit``，多单位置 ``None``。"""
+    table_type: str = "other"
+    """表格类型：financial_statement / valuation / forecast / industry_summary / ranking / pipeline / other。"""
+    table_scope: str = "unknown"
+    """表格主体范围：stock / industry / mixed / unknown。"""
     stock_codes: List[str] = field(default_factory=list)
     report_period: Optional[str] = None
     metric_names: List[str] = field(default_factory=list)
@@ -689,6 +751,10 @@ class Table:
             "table_col_count": self.col_count,
             "table_has_header": self.has_header,
             "table_is_key_value": self.is_key_value,
+            "table_type": self.table_type,
+            "table_scope": self.table_scope,
+            "table_unit_source": self.unit_source,
+            "table_unit_candidates": list(self.unit_candidates),
             "table_section_rows": list(self.section_rows),
             "table_sub_header_rows": list(self.sub_header_rows),
             "table_merged_cells": [dict(cell) for cell in self.merged_cells],
@@ -778,6 +844,103 @@ def _detect_sub_header_rows(
     return found
 
 
+def _contains_any(text: str, terms: Sequence[str]) -> bool:
+    """大小写不敏感的任一词命中。"""
+    upper = (text or "").upper()
+    return any(term.upper() in upper for term in terms)
+
+
+def _is_footnote_row(row: Sequence[str]) -> bool:
+    """是否表下注释行（unit 的 footnote 来源）。"""
+    for cell in list(row)[:2]:
+        if _FOOTNOTE_RE.match(_clean_cell(cell)):
+            return True
+    return False
+
+
+def _resolve_unit_sources(
+    cell_text: str, caption_text: str, footnote_text: str
+) -> Tuple[List[str], Optional[str], str]:
+    """按 cell -> caption -> footnote 解析单位，返回 ``(candidates, unit, source)``。
+
+    任一层出现多个不同货币单位 → 整体 ``multi``，不猜、不取众数。
+    """
+    sources = [
+        ("cell", detect_units(cell_text, limit=10)),
+        ("caption", detect_units(caption_text, limit=10)),
+        ("footnote", detect_units(footnote_text, limit=10)),
+    ]
+    candidates: List[str] = []
+    for _name, units in sources:
+        for unit in units:
+            if unit not in candidates:
+                candidates.append(unit)
+    if not candidates:
+        return [], None, "none"
+    if len(candidates) > 1:
+        return candidates, None, "multi"
+    unit = candidates[0]
+    for name, units in sources:
+        if unit in units:
+            return candidates, unit, name
+    return candidates, unit, "none"
+
+
+def classify_table_type(
+    caption: str,
+    title: str,
+    headers: Sequence[str],
+    first_column: str,
+    metric_names: Sequence[str],
+    doc_type: str = "",
+) -> str:
+    """表类型启发式（阶段 1 契约；先规则、后人工抽检校准）。"""
+    text = " ".join(part for part in (
+        caption or "", " ".join(headers or []), first_column or "",
+        " ".join(metric_names or []),
+    ) if part)
+    if _contains_any(text, _STATEMENT_TITLE_TERMS):
+        return "financial_statement"
+    if _contains_any(text, _PIPELINE_TERMS):
+        return "pipeline"
+    if _contains_any(text, _RANKING_TERMS):
+        return "ranking"
+    # 预测标记（2025E/盈利预测）优先于 EPS/PE：预测表常同时带估值列。
+    if _contains_any(text, _FORECAST_TERMS):
+        return "forecast"
+    # 明确写「估值」的标题优先于财务指标：可比公司估值表常带营业收入列。
+    if "估值" in (caption or "") and not _contains_any(text, _FORECAST_TERMS):
+        return "valuation"
+    if _contains_any(text, _FIN_METRIC_TERMS):
+        return "financial_statement"
+    if _contains_any(text, _VALUATION_TERMS):
+        return "valuation"
+    if "评级" in text and "说明" in text and not _contains_any(text, _VALUATION_TERMS + _FIN_STATEMENT_TERMS):
+        return "other"
+    if doc_type == "industry" or _contains_any(text, _INDUSTRY_SCOPE_TERMS):
+        return "industry_summary"
+    return "other"
+
+
+def classify_table_scope(doc_type: str, stock_codes: Sequence[str], text: str) -> str:
+    """表主体范围启发式：表级证据优先，``doc_type`` 只作先验。"""
+    n_codes = len(stock_codes or [])
+    industry_hit = _contains_any(text, _INDUSTRY_SCOPE_TERMS)
+    if doc_type == "stock":
+        if n_codes > 1 or (industry_hit and n_codes == 0):
+            return "mixed"
+        return "stock"
+    if doc_type == "industry":
+        if n_codes == 1 and not industry_hit:
+            return "stock"
+        return "industry"
+    if n_codes == 1 and not industry_hit:
+        return "stock"
+    if industry_hit or n_codes >= 2:
+        return "industry"
+    return "unknown"
+
+
 def build_table(
     index: int,
     source_file: str,
@@ -787,6 +950,8 @@ def build_table(
     table_format: str = "markdown",
     parse_ok: bool = True,
     raw: str = "",
+    doc_type: str = "",
+    unit_mode: str = "fallback",
 ) -> Table:
     """由 :class:`TableGrid` 构造 :class:`Table`，并推断单位 / 主体 / 报告期 / 指标列。
 
@@ -808,10 +973,27 @@ def build_table(
         if part
     )
     first_column = " ".join(row[0] for row in rows[:40] if row and row[0])
+    core_rows = [row for row in rows[:40] if not _is_footnote_row(row)]
+    first_column_core = " ".join(row[0] for row in core_rows if row and row[0])
     body_text = " ".join(" ".join(row) for row in rows[:20])
 
-    candidates = detect_units(head_text) or detect_units(first_column)
-    unit = candidates[0] if len(candidates) == 1 else None
+    # 全表文本（含正文串入的表）；作为元数据扫描的最后一级来源
+
+    if unit_mode == "legacy":
+        # 仅供已归档审计脚本复现旧 65.0% 口径；生产默认走 fallback。
+        candidates = detect_units(head_text) or detect_units(first_column) or detect_units(body_text)
+        unit = candidates[0] if len(candidates) == 1 else None
+        unit_source = "cell" if unit else ("multi" if len(candidates) > 1 else "none")
+    else:
+        # 回退链：cell -> caption/title -> footnote；多来源冲突一律 multi，不猜。
+        cell_rows = [row for row in rows[:40] if not _is_footnote_row(row)]
+        footnote_rows = [row for row in rows if _is_footnote_row(row)]
+        cell_text = " ".join(headers + [" ".join(row) for row in cell_rows])
+        caption_unit_text = " ".join(part for part in (caption_text, title_text) if part)
+        footnote_text = " ".join(" ".join(row) for row in footnote_rows)
+        candidates, unit, unit_source = _resolve_unit_sources(
+            cell_text, caption_unit_text, footnote_text
+        )
     factor = UNIT_TO_YUAN.get(unit, 1) if unit else 1
 
     period = (
@@ -825,9 +1007,20 @@ def build_table(
         or extract_stock_codes(body_text)
     )
     metric_names = extract_metric_names(headers)
-    for name in extract_metric_names([row[0] for row in rows[:40] if row]):
+    for name in extract_metric_names([row[0] for row in rows if row]):
         if name not in metric_names:
             metric_names.append(name)
+    if not metric_names:
+        # 兜底：表内任意**单元格**里出现的指标词（首列不是指标名的那类表）。
+        # 这里只收「命中的词」而不是整格文本，避免把数值一起塞进指标名（如「营业收入 100」）。
+        for row in rows:
+            for cell in row:
+                text = _clean_cell(cell)
+                if not text:
+                    continue
+                for term in METRIC_TERMS:
+                    if term in text and term not in metric_names:
+                        metric_names.append(term)
 
     # 合并单元格：把源网格坐标折算到 ``rows`` 坐标（``raw_row - consumed_rows``；表头行为 -1）。
     merged_cells = [
@@ -849,6 +1042,12 @@ def build_table(
         span_facts=table_format == "html",
     )
     sub_header_rows = _detect_sub_header_rows(rows, headers, section_rows, grid.has_header)
+    table_type = classify_table_type(
+        caption=caption_text, title=title_text, headers=headers,
+        first_column=first_column_core, metric_names=metric_names, doc_type=doc_type,
+    )
+    scope_text = " ".join(part for part in (caption_text, " ".join(headers), first_column_core) if part)
+    table_scope = classify_table_scope(doc_type, codes, scope_text)
 
     return Table(
         table_id="{}#t{}".format(source_file or "unknown", index + 1),
@@ -865,7 +1064,10 @@ def build_table(
         merged_cells=merged_cells,
         unit=unit,
         unit_factor=factor,
+        unit_source=unit_source,
         unit_candidates=candidates,
+        table_type=table_type,
+        table_scope=table_scope,
         stock_codes=codes,
         report_period=period,
         metric_names=metric_names,
@@ -879,7 +1081,8 @@ _HTML_TABLE_RE = re.compile(r"<table\b.*?</table>", re.DOTALL | re.IGNORECASE)
 _PLACEHOLDER_RE = re.compile(r"^[ \t]*\[TABLE_PLACEHOLDER_\d+\][ \t]*$", re.MULTILINE)
 
 
-def scan_tables(content: str, source_file: str = "", title: str = "") -> Tuple[str, List[Table]]:
+def scan_tables(content: str, source_file: str = "", title: str = "", doc_type: str = "",
+                unit_mode: str = "fallback") -> Tuple[str, List[Table]]:
     """扫描正文，抽出全部表格，返回 ``(剥离表格后的正文, Table 列表)``。
 
     规则：
@@ -899,7 +1102,7 @@ def scan_tables(content: str, source_file: str = "", title: str = "") -> Tuple[s
         tables.append(
             build_table(
                 len(tables), source_file, grid, title=title, table_format="html",
-                raw=match.group(0),
+                raw=match.group(0), doc_type=doc_type, unit_mode=unit_mode,
             )
         )
         return "\n"
@@ -937,7 +1140,7 @@ def scan_tables(content: str, source_file: str = "", title: str = "") -> Tuple[s
         tables.append(
             build_table(
                 len(tables), source_file, grid, title=title, caption=caption,
-                table_format="markdown", raw="\n".join(block),
+                table_format="markdown", raw="\n".join(block), doc_type=doc_type, unit_mode=unit_mode,
             )
         )
         out.append("")

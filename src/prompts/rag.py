@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 from langchain_core.prompts import ChatPromptTemplate
 
 # 模块级版本号：修改本文件任一 Prompt 文本后递增（prompts/registry.json 同步登记）
-RAG_PROMPT_VERSION = "2026-09-09-v1"
+RAG_PROMPT_VERSION = "2026-10-18-v2"
 
 # 唯一模板：手写链路（build_prompt）与 LCEL 链路（build_rag_chat_prompt）同源
 RAG_PROMPT_TEMPLATE = chr(10).join([
@@ -30,6 +30,9 @@ RAG_PROMPT_TEMPLATE = chr(10).join([
     "3. 回答时请保持专业、客观。",
     "4. 如果参考资料不足以回答问题，请明确告知。",
     "5. 回答结构清晰，必要时使用要点或段落。",
+    "6. 回答中的每一个具体数字都必须能在参考资料中找到；不得依据常识、记忆或行业经验补充参考资料没有的数字。",
+    "7. 如果问题点名了公司/机构，回答只能讨论这些主体；参考资料没有覆盖某个点名主体时，明确说明“资料未覆盖”，不得替换成其他公司。",
+    "8. 不得用具体数字替“某企业/某公司/该企业/该公司”等匿名主体补全；参考资料没有给出主体名称时，只做定性描述或说明证据不足。",
     "",
     "## 回答",
     "",

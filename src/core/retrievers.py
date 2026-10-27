@@ -10,7 +10,7 @@
 import math
 import re
 from collections import Counter
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from core.interfaces import IRetriever
 
@@ -127,6 +127,7 @@ class BM25Retriever(IRetriever):
         query: str,
         query_filter: Optional[Any] = None,
         top_k: Optional[int] = None,
+        candidate_indices: Optional[Sequence[int]] = None,
     ) -> List[Dict[str, Any]]:
         """BM25 检索，返回统一候选结构；无命中时返回空列表。
 
@@ -134,6 +135,9 @@ class BM25Retriever(IRetriever):
             query: 查询文本
             query_filter: 兼容接口签名，BM25 不消费（保持与其他检索器一致）
             top_k: 返回条数，默认返回全部命中
+            candidate_indices: 只在这些文档下标内打分（实体定向检索用）。``None`` =
+                全库扫描；传入空序列 = 无候选。BM25 的 ``df`` / ``avgdl`` 仍按全库
+                统计，保证子集打分的分值与全库一致。
 
         Returns:
             [{"id", "score", "payload"}, ...]，按 BM25 得分降序
@@ -143,7 +147,11 @@ class BM25Retriever(IRetriever):
             return []
         n_docs = len(self.docs)
         scored: List[Tuple[float, int]] = []
-        for idx, tokens in enumerate(self._tokenized):
+        indices = range(n_docs) if candidate_indices is None else candidate_indices
+        for idx in indices:
+            if idx < 0 or idx >= n_docs:
+                continue
+            tokens = self._tokenized[idx]
             freq = Counter(tokens)
             score = 0.0
             for token in set(q_tokens):

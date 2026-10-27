@@ -126,6 +126,19 @@ def test_year_pair_not_merged():
     assert v.extract_numbers('区间从 1 200 点到 2 5 0 0 点') == ['1200', '2500']
 
 
+def test_extract_numbers_keeps_thousands_separator_as_one_token():
+    """千分位数字不得被拆成「3」+「369」。"""
+    v = CitationValidator(match_mode="comma")
+    assert v.extract_numbers('利润总额 3,369 百万元') == ['3,369']
+    assert v.extract_numbers('营业收入 1,234,567.89 万元') == ['1,234,567.89']
+
+
+def test_list_number_and_year_not_merged():
+    """标题序号 ``1. 2025`` 不得折成 ``1.2025``。"""
+    v = CitationValidator()
+    assert v.extract_numbers('### 1. 2025 年第三季度营收数据') == ['1', '2025']
+
+
 def test_table_row_not_merged():
     # 表格行：空格分隔的多个数字不应被合并（折叠仅限单数字 LaTeX 排版空格）
     v = CitationValidator()

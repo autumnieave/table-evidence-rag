@@ -4,7 +4,15 @@ import hashlib
 from typing import Any, Dict, List, Optional, Tuple
 
 from .boilerplate import is_boilerplate_block, strip_trailing_boilerplate
-from .table_struct import TABLE_SLICE_MAX_CHARS, TABLE_SLICE_ROWS, extract_report_period, scan_tables
+from .row_facts import build_row_facts
+from .table_struct import (
+    TABLE_SLICE_MAX_CHARS,
+    TABLE_SLICE_ROWS,
+    extract_report_period,
+    extract_report_period_strict,
+    scan_tables,
+    unit_factor,
+)
 
 try:
     from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -19,21 +27,93 @@ REPORT_PERIOD_TITLE_KEYWORDS: Tuple[str, ...] = (
 )
 
 
-def doc_level_fields(metadata: Dict[str, Any]) -> Dict[str, Any]:
+def resolve_report_period(title: str, body_head: str = "", doc_type: str = "",
+                          pub_year: int = 0) -> Tuple[Optional[str], str]:
+    """报告期解析（三级来源），返回 ``(报告期, 来源标签)``。
+
+    1. ``title``：标题里的**强期词**（``2025Q3`` / ``25H1`` / ``2025年三季报`` / ``2024年报``…）——强证据，直接采信；
+    2. ``title_weak``：标题含**报告类型词**（年报/季报/点评/业绩…）时的**裸年份**（``2024年`` → ``2024A``）
+       ——有类型词佐证才认，避免把「2024年…行业概览」的**发布年**当报告期；
+    3. ``body``：**正文首段**里的强期词——只对**个股研报**（``doc_type == "stock"``）启用。
+
+    第 3 级为什么不用于行业研报：行业研报是市场/策略研究，正文里的季度多半是**顺带提及**
+    （如周报回顾里的 ``2025Q1``），当报告期就是假阳性（实测会给出 ``2024Q4`` / ``2025Q2`` 这类错值）。
+    """
+    if title:
+        period = extract_report_period_strict(title)
+        if period and (not pub_year or _year_of(period) <= pub_year):
+            return period, "title"
+        if any(k in title for k in REPORT_PERIOD_TITLE_KEYWORDS):
+            period = extract_report_period(title)
+            if period and (not pub_year or _year_of(period) <= pub_year):
+                return period, "title_weak"
+    if body_head and doc_type in BODY_PERIOD_DOC_TYPES:
+        period = extract_report_period_strict(body_head[:BODY_HEAD_CHARS])
+        if period and (not pub_year or _year_of(period) <= pub_year):
+            return period, "body"
+    return None, "none"
+
+
+def doc_level_fields(metadata: Dict[str, Any], body_head: str = "") -> Dict[str, Any]:
     """文档级主体 / 报告期元数据（§3.2「每 chunk」口径；正文块与表块共用）。
 
     - ``stock_code`` / ``stock_name``：取自 loader 的 Excel 元数据（``stockCode`` / ``stockName``），行业研报为空；
-    - ``report_period``：**仅当标题含报告类型词**（年报/季报/点评…）时才从标题提取，否则 ``None``
-      （避免把「2024年行业概览」这类发布年份当成报告期）；
+    - ``report_period`` / ``report_period_source``：见 :func:`resolve_report_period`
+      （来源 ∈ ``title`` / ``title_weak`` / ``body`` / ``none``，便于审计覆盖率来自哪一级）；
+    - ``publish_year``：**文档发布年**（``publishDate`` → ``filename`` → ``title``），取不到为 ``None``。
+      这是**补充字段、不替代 ``report_period``**：行业研报是市场/策略/周报，**没有报告期语义**但**有发布年**，
+      L5-C 期间过滤对行业研报用它、对个股研报用 ``report_period``（见 ``filters.period_gate``）；
     - ``doc_type``：``stock`` / ``industry``（loader 已给 ``doc_type`` 的行业语料优先）。
     """
     title = metadata.get("title") or ""
-    period = extract_report_period(title) if any(k in title for k in REPORT_PERIOD_TITLE_KEYWORDS) else None
     code = metadata.get("stockCode") or None
     name = metadata.get("stockName") or None
     doc_type = metadata.get("doc_type") or ("stock" if code else "industry")
-    return {"stock_code": code, "stock_name": name, "report_period": period, "doc_type": doc_type}
+    pub_year = publish_year(metadata)
+    period, source = resolve_report_period(title, body_head, doc_type, pub_year)
+    return {"stock_code": code, "stock_name": name, "report_period": period,
+            "report_period_source": source, "publish_year": pub_year or None,
+            "doc_type": doc_type}
 
+#: 取「发布年」的元数据键顺序（loader 的 ``publishDate`` 优先）
+_PUBLISH_YEAR_KEYS: Tuple[str, ...] = ("publishDate", "filename", "title")
+_FOUR_DIGIT_YEAR_RE = re.compile(r"(20\d{2})")
+
+
+def _year_of(text: str) -> int:
+    """取文本里第一个 4 位年份；取不到返回 0。"""
+    match = _FOUR_DIGIT_YEAR_RE.search(text or "")
+    return int(match.group(1)) if match else 0
+
+
+def publish_year(metadata: Dict[str, Any]) -> int:
+    """文档发布年（``publishDate`` → ``filename`` → ``title``）；都取不到返回 0。"""
+    for key in _PUBLISH_YEAR_KEYS:
+        year = _year_of(str(metadata.get(key) or ""))
+        if year:
+            return year
+    return 0
+
+
+def period_is_plausible(period: Optional[str], metadata: Dict[str, Any]) -> bool:
+    """报告期合理性：**报告期年份不得晚于发布年**（报告不可能覆盖发布之后的报告期）。
+
+    发布年取不到时**不做判断**（返回 True），宁可留空也不误杀。
+    这条闸门剔除的是「策略报告把**预测年度**当报告期」这类假阳性
+    （如 2025 年发布的《2026 年医药行业投资策略》推出来的 ``2026A``）。
+    """
+    if not period:
+        return False
+    pub = publish_year(metadata)
+    if not pub:
+        return True
+    return _year_of(period) <= pub
+
+
+#: 「正文首段」用于推断报告期的字符窗口（仅个股研报启用）
+BODY_HEAD_CHARS: int = 1500
+#: 允许用「正文首段」推断报告期的 doc_type（行业研报**不启用**：会把顺带提及的季度当报告期）
+BODY_PERIOD_DOC_TYPES: Tuple[str, ...] = ("stock",)
 #: 分块最小长度（字符）：过短的相邻文本块会被合并，避免单字/碎片块入库。
 #: 与 config.rag_config 的 CHUNK_MIN_CHARS 默认值保持一致；改这里必须同步改那里（同 overlap 约定）。
 CHUNK_MIN_CHARS: int = 200
@@ -227,6 +307,7 @@ def split_documents(
     table_slice_rows: int = TABLE_SLICE_ROWS,
     table_slice_max_chars: int = TABLE_SLICE_MAX_CHARS,
     strip_boilerplate: bool = False,
+    row_fact_mode: str = "off",
 ) -> List[Dict[str, Any]]:
     """把文档切分为「文本块 + 表格块」两类 chunk。
 
@@ -243,6 +324,9 @@ def split_documents(
             整表 Markdown 会超限；0 = 不限）
         strip_boilerplate: 锅炉板闸门（§3.2）：剥离文档尾部声明/签名区，残余锅炉板块标
             ``chunk_type = "boilerplate"``（改动内容口径，**需重建索引**；默认 False）
+        row_fact_mode: 行级事实口径。``"off"`` = 只写 ``anchor_cells``（默认）；
+            ``"chunks"`` = 额外生成 ``chunk_type = "row_fact"`` 的子块（阶段 2/3，
+            必须配合 ``table_mode="structured"`` 使用，**需重建索引**）
 
     Returns:
         chunk 列表；``structured`` 模式下每个 chunk 额外带
@@ -260,6 +344,8 @@ def split_documents(
     all_chunks = []
     seen_hashes = set()
     structured = table_mode == "structured"
+    if row_fact_mode == "chunks" and not structured:
+        raise ValueError("row_fact_mode='chunks' 仅支持 table_mode='structured'")
     bp_docs = 0
     bp_chars = 0
     total_in_chars = sum(len(d.get("content") or "") for d in documents)
@@ -274,24 +360,36 @@ def split_documents(
                 bp_chars += removed
         filename = metadata.get("filename", "")
         table_chunks = []
+        row_fact_chunks = []
 
         if structured:
             # 结构化口径：一张表一个 / 若干 chunk；正文剥离表格与占位符（数据管道重构）
+            doc_type_hint = metadata.get("doc_type") or (
+                "stock" if metadata.get("stockCode") else "industry"
+            )
             processed_content, tables = scan_tables(
-                content, source_file=filename, title=metadata.get("title", "")
+                content, source_file=filename, title=metadata.get("title", ""),
+                doc_type=doc_type_hint,
             )
             text_chunks = (
                 text_splitter.split_text(processed_content) if processed_content.strip() else []
             )
             if text_chunks:
                 text_chunks = merge_short_chunks(text_chunks, min_chars)
-            doc_fields = doc_level_fields(metadata)
+            doc_fields = doc_level_fields(metadata, body_head=text_chunks[0] if text_chunks else "")
             for table in tables:
                 ranges = table.slice_ranges(table_slice_rows, table_slice_max_chars)
                 payload = table.to_payload()
                 default_code = table.stock_codes[0] if table.stock_codes else None
                 for slice_index, (row_start, row_end) in enumerate(ranges):
                     slice_text = table.to_text(row_start, row_end)
+                    period = table.report_period
+                    period_source = "table"
+                    if period and not period_is_plausible(period, metadata):
+                        period, period_source = None, "none"
+                    if not period:
+                        period = doc_fields["report_period"]
+                        period_source = doc_fields["report_period_source"]
                     extra = dict(payload)
                     extra.update({
                         "is_table_row": True,
@@ -306,13 +404,55 @@ def split_documents(
                         "table_parse_ok": table.parse_ok,
                         "stock_code": metadata.get("stockCode") or default_code,
                         "stock_name": metadata.get("stockName") or None,
-                        "report_period": table.report_period or doc_fields["report_period"],
+                        "report_period": period,
+                        "report_period_source": period_source,
+                        "publish_year": doc_fields["publish_year"],
                         "doc_type": doc_fields["doc_type"],
                         "metric_name": ", ".join(table.metric_names),
                         "metric_names": list(table.metric_names),
                         "unit": table.unit,
                         "unit_factor": table.unit_factor,
+                        "unit_source": table.unit_source,
+                        "unit_candidates": list(table.unit_candidates),
+                        "table_type": table.table_type,
+                        "table_scope": table.table_scope,
+                        "chunk_id": "{}#s{}".format(table.table_id, slice_index),
                     })
+                    facts = build_row_facts(table, metadata, row_start, row_end)
+                    extra["anchor_cells"] = [fact["anchor"] for fact in facts]
+                    extra["anchor_count"] = len(facts)
+                    extra["row_fact_count"] = len(facts)
+                    if row_fact_mode == "chunks":
+                        for fact in facts:
+                            fact_extra = dict(extra)
+                            fact_extra.update({
+                                "chunk_type": "row_fact",
+                                "is_table_row": False,
+                                "is_row_fact": True,
+                                "parent_id": table.table_id,
+                                "table_id": table.table_id,
+                                "table_index": table.index,
+                                "row_index": fact["row_index"],
+                                "row_start": fact["row_index"],
+                                "row_end": fact["row_index"] + 1,
+                                "col_index": fact["col_index"],
+                                "chunk_id": fact["chunk_id"],
+                                "anchor_cells": [fact["anchor"]],
+                                "anchor_count": 1,
+                                "unit": fact["unit"],
+                                "unit_factor": unit_factor(fact["unit"]),
+                                "unit_source": fact["unit_source"],
+                                "currency_raw": fact["currency_raw"],
+                                "unit_kind": fact["unit_kind"],
+                                "period": fact["period"],
+                                "period_type": fact["period_type"],
+                                "entity": fact["entity"],
+                                "metric": fact["metric"],
+                                "metric_name": fact["metric"],
+                                "metric_names": [fact["metric"]],
+                                "table_caption": fact["table_caption"],
+                            })
+                            row_fact_chunks.append((fact["text"], fact_extra))
                     table_chunks.append((slice_text, extra))
         else:
             processed_content, table_rows = extract_tables_and_text(content)
@@ -331,7 +471,7 @@ def split_documents(
                         "row_index": idx,
                     }))
 
-        chunk_total = len(text_chunks) + len(table_chunks)
+        chunk_total = len(text_chunks) + len(table_chunks) + len(row_fact_chunks)
 
         for idx, chunk_text in enumerate(text_chunks):
             if not chunk_text:
@@ -347,9 +487,10 @@ def split_documents(
                 "content_hash": content_hash,
                 "is_table_row": False,
                 "parent_id": None,
+                "chunk_id": "{}#c{}".format(filename, idx),
             })
             if structured:
-                chunk_metadata.update(doc_level_fields(metadata))
+                chunk_metadata.update(doc_fields)
                 chunk_metadata["chunk_type"] = (
                     "boilerplate" if strip_boilerplate and is_boilerplate_block(chunk_text) else "prose"
                 )
@@ -371,6 +512,21 @@ def split_documents(
             if structured:
                 chunk_metadata["chunk_type"] = "table"
             all_chunks.append({"content": chunk_text, "metadata": chunk_metadata})
+        for idx, (chunk_text, extra) in enumerate(row_fact_chunks):
+            if not chunk_text:
+                continue
+            content_hash = hashlib.md5(chunk_text.encode('utf-8')).hexdigest()
+            if content_hash in seen_hashes:
+                continue
+            seen_hashes.add(content_hash)
+            chunk_metadata = metadata.copy()
+            chunk_metadata.update({
+                "chunk_index": len(text_chunks) + len(table_chunks) + idx,
+                "chunk_total": chunk_total,
+                "content_hash": content_hash,
+            })
+            chunk_metadata.update(extra)
+            all_chunks.append({"content": chunk_text, "metadata": chunk_metadata})
 
     if strip_boilerplate:
         logger.info(
@@ -380,4 +536,7 @@ def split_documents(
             bp_chars,
             100.0 * bp_chars / max(1, total_in_chars),
         )
+    # 统一顶层来源字段：anchor 内已有 source_file，chunk 顶层补一份便于按文件过滤
+    for chunk in all_chunks:
+        chunk["metadata"].setdefault("source_file", chunk["metadata"].get("filename", ""))
     return all_chunks

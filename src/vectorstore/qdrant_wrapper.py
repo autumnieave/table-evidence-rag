@@ -160,6 +160,26 @@ class QdrantClientWrapper:
         """返回集合当前文档块总数（用于 BM25 索引一致性校验）"""
         return self.client.count(collection_name=self.config.QDRANT_COLLECTION_NAME).count
 
+    def ensure_payload_indexes(self, fields: Dict[str, str]) -> None:
+        """为常用过滤字段建 payload index（阶段 2/3：chunk_type / table_id / row 坐标）。
+
+        Args:
+            fields: ``{字段名: "keyword"|"integer"|"float"|"bool"}``
+
+        已存在的索引会报错，忽略即可；本地 Qdrant 对 10 万级点建索引通常在秒级。
+        """
+        for field, schema in fields.items():
+            try:
+                self.client.create_payload_index(
+                    collection_name=self.config.QDRANT_COLLECTION_NAME,
+                    field_name=field,
+                    field_schema=schema,
+                    wait=True,
+                )
+                logger.info("payload index 已创建：%s (%s)", field, schema)
+            except Exception as exc:  # 已存在 / 旧版本不支持：不阻塞重建
+                logger.warning("payload index 跳过：%s (%s): %s", field, schema, exc)
+
     def scroll_all(self, batch_size: int = 1000) -> List[Dict[str, Any]]:
         """滚动读取集合全部点（id + payload），用于构建 BM25 等非向量索引。
 
