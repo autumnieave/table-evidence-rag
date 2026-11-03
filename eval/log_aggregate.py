@@ -45,12 +45,29 @@ def load_records(paths: Iterable[Path]) -> List[Dict[str, Any]]:
     return records
 
 
-def filter_records(records: Iterable[Dict[str, Any]], path_prefix: str) -> List[Dict[str, Any]]:
-    """Keep only records whose path starts with ``path_prefix``."""
+def filter_records(
+    records: Iterable[Dict[str, Any]],
+    path_prefix: str,
+    mode: str = "",
+    path_exact: str = "",
+    require_fields: Sequence[str] | str = (),
+) -> List[Dict[str, Any]]:
+    """按路径、模式与必填字段筛选日志记录。
+
+    ``path_exact`` 优先于 ``path_prefix``；``require_fields`` 中的字段必须非 null，
+    用于排除测试 stub 或未执行检索/生成的请求。
+    """
     items = list(records)
-    if not path_prefix:
-        return items
-    return [record for record in items if str(record.get("path") or "").startswith(path_prefix)]
+    if path_exact:
+        items = [record for record in items if str(record.get("path") or "") == path_exact]
+    elif path_prefix:
+        items = [record for record in items if str(record.get("path") or "").startswith(path_prefix)]
+    if mode:
+        items = [record for record in items if str(record.get("mode") or "") == mode]
+    required = (require_fields,) if isinstance(require_fields, str) else tuple(require_fields or ())
+    for field in required:
+        items = [record for record in items if record.get(field) is not None]
+    return items
 
 
 def percentile(values: Sequence[float], p: float) -> Optional[float]:
@@ -217,13 +234,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR), help="日志目录")
     parser.add_argument("--path", action="append", help="显式 JSONL 路径（可重复；给出时忽略 --date）")
     parser.add_argument("--path-prefix", default="", help="只聚合 path 以该前缀开头的记录，如 /chat")
+    parser.add_argument("--path-exact", default="", help="只聚合 path 精确匹配的记录，如 /chat（优先于 --path-prefix）")
+    parser.add_argument("--mode", default="", help="只聚合指定 mode（rag / agent / clarify）")
+    parser.add_argument(
+        "--require-field",
+        action="append",
+        default=[],
+        help="只聚合该字段非 null 的记录，可重复，如 --require-field retrieval_ms",
+    )
     parser.add_argument("--out", default="", help="Markdown 输出路径")
     parser.add_argument("--json-out", default="", help="JSON 聚合结果输出路径")
     args = parser.parse_args(argv)
 
     paths = [Path(p) for p in args.path] if args.path else _default_paths(args.date, Path(args.log_dir))
     records = load_records(paths)
-    records = filter_records(records, args.path_prefix)
+    records = filter_records(
+        records,
+        args.path_prefix,
+        args.mode,
+        path_exact=args.path_exact,
+        require_fields=args.require_field,
+    )
     summary = aggregate(records)
     markdown = render_markdown(summary, paths)
     print(markdown)

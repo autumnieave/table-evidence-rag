@@ -120,3 +120,20 @@ def test_filter_records_by_path_prefix() -> None:
     ]
     assert [row["total_ms"] for row in filter_records(records, "/chat")] == [100.0, 200.0]
     assert len(filter_records(records, "")) == 3
+
+
+def test_filter_records_by_exact_path_mode_and_required_field() -> None:
+    records = [
+        {"path": "/chat", "mode": "rag", "retrieval_ms": 12.0},
+        {"path": "/chat", "mode": "agent", "retrieval_ms": 13.0},
+        {"path": "/chat", "mode": "rag", "retrieval_ms": None},
+        {"path": "/chat/stream", "mode": "rag", "retrieval_ms": 14.0},
+    ]
+    filtered = filter_records(
+        records,
+        path_prefix="/chat",
+        mode="rag",
+        path_exact="/chat",
+        require_fields=("retrieval_ms",),
+    )
+    assert filtered == [records[0]]

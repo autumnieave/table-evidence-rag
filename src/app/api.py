@@ -266,6 +266,9 @@ async def chat(request: ChatRequest, http_request: Request):
     if trace is not None:
         trace.mode = request.mode or "rag"
         trace.extra["question_chars"] = len(request.question or "")
+        # 显式注入当前上下文：不依赖 ASGI 中间件的 contextvar 传播，
+        # 否则 pipeline.query 里的 get_trace() 可能拿不到 trace，阶段耗时全为 null。
+        set_trace(trace)
     cache = _get_query_cache()
     cache_key = None
     if cache is not None:
@@ -431,6 +434,7 @@ async def chat_clarify(request: ClarifyRequest, http_request: Request):
     if trace is not None:
         trace.mode = "clarify"
         trace.extra["question_chars"] = len(request.input or "")
+        set_trace(trace)
     try:
         reply, done = pipeline.conversational_query(request.input, user_id=request.user_id)
         return {

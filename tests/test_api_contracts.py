@@ -15,6 +15,7 @@ mock 策略（对齐 tests/ 既有 FakeClient / StubRag 模式）：
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -417,3 +418,52 @@ def test_health_is_exempt_from_api_key(api_env) -> None:
     finally:
         _restore_attr(stub_cfg, "API_KEYS", old_keys)
         _restore_attr(stub_cfg, "API_AUTH_ENABLED", old_enabled)
+
+# ── 结构化日志埋点 ────────────────────────────────────────────────────
+def test_chat_injects_trace_and_records_stages(api_env, monkeypatch, tmp_path) -> None:
+    """成功路径：/chat 必须把 RequestTrace 注入 pipeline 上下文，阶段与 token 能落盘。"""
+    client, _, stub_cfg, stub_pipe = api_env
+    monkeypatch.setattr(stub_cfg, "OBSERVABILITY_LOG_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr(stub_cfg, "OBSERVABILITY_LOG_ENABLED", True, raising=False)
+    seen = {}
+
+    def fake_query(question, verbose=False, stream_callback=None):
+        from utils.observability import get_trace
+
+        trace = get_trace()
+        seen["trace"] = trace
+        if trace is not None:
+            trace.record_stage("retrieval_ms", 12.0)
+            trace.record_usage(prompt_tokens=10, completion_tokens=5)
+        return {"content": "ok", "image": [], "references": []}
+
+    monkeypatch.setattr(stub_pipe, "query", fake_query)
+    resp = client.post("/chat", json={"question": "trace 注入测试", "mode": "rag"})
+    assert resp.status_code == 200
+    assert seen["trace"] is not None
+
+    log = tmp_path / f"{datetime.now():%Y%m%d}.jsonl"
+    row = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()][-1]
+    assert row["retrieval_ms"] == 12.0
+    assert row["total_tokens"] == 15
+    assert row["usage_status"] == "recorded"
+
+
+def test_chat_error_path_logs_error_status(api_env, monkeypatch, tmp_path) -> None:
+    """异常路径：500 响应必须落 status=error / status_code=500，字段缺失不填 0。"""
+    client, _, stub_cfg, stub_pipe = api_env
+    monkeypatch.setattr(stub_cfg, "OBSERVABILITY_LOG_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr(stub_cfg, "OBSERVABILITY_LOG_ENABLED", True, raising=False)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(stub_pipe, "query", boom)
+    resp = client.post("/chat", json={"question": "错误路径测试", "mode": "rag"})
+    assert resp.status_code == 500
+
+    log = tmp_path / f"{datetime.now():%Y%m%d}.jsonl"
+    row = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()][-1]
+    assert row["status"] == "error"
+    assert row["status_code"] == 500
+    assert row["retrieval_ms"] is None
