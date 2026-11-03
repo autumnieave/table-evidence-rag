@@ -14,7 +14,7 @@
 #   curl http://localhost:8080/health     # 经 Nginx 同源反代到容器后端
 #   docker compose logs -f backend
 
-name: smart-financial-qa
+name: table-evidence-rag
 
 services:
   # ==================== Qdrant 向量数据库 ====================
