@@ -64,6 +64,7 @@ _*.ps1
 **/*.xlsx
 database/*.sql
 !database/schema.sql
+!database/create_readonly_user.sql
 
 # ===== 文档（二进制 / 面试材料，不上传 GitHub） =====
 docs/论文/

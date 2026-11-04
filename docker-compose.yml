@@ -67,11 +67,11 @@ services:
       - MEMORY_DB_PATH=/app/database/chat_memory.db
       - MEMORY_REDIS_URL=redis://host.docker.internal:6379/0
       - MEMORY_TTL_SECONDS=${MEMORY_TTL_SECONDS:-86400}
-      # ---- MySQL：连宿主已导入数据的 financial_database（root/123456）----
+      # ---- MySQL：连宿主已导入数据的 financial_database（只读账号）----
       - MYSQL_HOST=host.docker.internal
       - MYSQL_PORT=3306
-      - MYSQL_USER=${MYSQL_USER:-root}
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-123456}
+      - MYSQL_USER=${MYSQL_USER:-rag_reader}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-change_me}
       - MYSQL_DATABASE=${MYSQL_DATABASE:-financial_database}
     depends_on:
       qdrant:

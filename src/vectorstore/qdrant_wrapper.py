@@ -7,6 +7,28 @@ from qdrant_client.http import models
 
 logger = logging.getLogger(__name__)
 
+
+class QdrantCollectionSchemaError(RuntimeError):
+    """Qdrant 集合的向量维度或距离度量与配置不匹配。"""
+
+
+_DISTANCE_ALIASES = {
+    "EUCLIDEAN": "EUCLID",
+    "L2": "EUCLID",
+    "COSINE": "COSINE",
+    "DOT": "DOT",
+    "MANHATTAN": "MANHATTAN",
+}
+
+
+def _distance_name(value: Any) -> str:
+    """把 Qdrant Distance 枚举或配置字符串归一化为大写名称。"""
+    raw = getattr(value, "value", value)
+    name = str(raw or "").strip().upper()
+    if "." in name:
+        name = name.rsplit(".", 1)[-1]
+    return _DISTANCE_ALIASES.get(name, name)
+
 class QdrantClientWrapper:
     """
     Qdrant向量数据库客户端封装
@@ -40,35 +62,80 @@ class QdrantClientWrapper:
         self._ensure_collection_exists()
 
     def _ensure_collection_exists(self):
-        """检查并创建集合"""
+        """检查并创建集合；已存在时必须通过维度与距离校验。"""
         collections = self.client.get_collections().collections
         collection_names = [c.name for c in collections]
 
         if self.config.QDRANT_COLLECTION_NAME not in collection_names:
             logger.info(f"创建Qdrant集合: {self.config.QDRANT_COLLECTION_NAME}")
 
-            # 距离度量映射
+            expected_distance = _distance_name(self.config.DISTANCE_METRIC)
             distance_map = {
                 "COSINE": self.models.Distance.COSINE,
                 "DOT": self.models.Distance.DOT,
-                "EUCLIDEAN": self.models.Distance.EUCLID,
-                "MANHATTAN": self.models.Distance.MANHATTAN
+                "EUCLID": self.models.Distance.EUCLID,
+                "MANHATTAN": self.models.Distance.MANHATTAN,
             }
-            distance = distance_map.get(
-                self.config.DISTANCE_METRIC.upper(),
-                self.models.Distance.COSINE
-            )
+            if expected_distance not in distance_map:
+                raise QdrantCollectionSchemaError(
+                    f"不支持的 DISTANCE_METRIC={self.config.DISTANCE_METRIC!r}；"
+                    f"可选：{', '.join(sorted(distance_map))}"
+                )
 
             self.client.create_collection(
                 collection_name=self.config.QDRANT_COLLECTION_NAME,
                 vectors_config=self.models.VectorParams(
                     size=self.config.VECTOR_DIMENSION,
-                    distance=distance
+                    distance=distance_map[expected_distance],
                 )
             )
             logger.info("集合创建成功")
         else:
-            logger.info(f"集合 {self.config.QDRANT_COLLECTION_NAME} 已存在")
+            info = self.client.get_collection(self.config.QDRANT_COLLECTION_NAME)
+            self._validate_collection_schema(info)
+            logger.info(
+                "集合 %s 已存在，schema 校验通过：dim=%s distance=%s",
+                self.config.QDRANT_COLLECTION_NAME,
+                self.config.VECTOR_DIMENSION,
+                _distance_name(self.config.DISTANCE_METRIC),
+            )
+
+    def _validate_collection_schema(self, info: Any) -> None:
+        """校验已存在集合的向量维度与距离，不匹配立即失败。"""
+        try:
+            vectors = info.config.params.vectors
+        except AttributeError as exc:
+            raise QdrantCollectionSchemaError(
+                f"无法读取集合 {self.config.QDRANT_COLLECTION_NAME} 的向量配置"
+            ) from exc
+
+        if hasattr(vectors, "size"):
+            vector_configs = [("", vectors)]
+        elif isinstance(vectors, dict):
+            vector_configs = list(vectors.items())
+        else:
+            vector_configs = []
+        if not vector_configs:
+            raise QdrantCollectionSchemaError(
+                f"集合 {self.config.QDRANT_COLLECTION_NAME} 没有可校验的向量配置"
+            )
+
+        expected_dim = int(self.config.VECTOR_DIMENSION)
+        expected_distance = _distance_name(self.config.DISTANCE_METRIC)
+        for vector_name, params in vector_configs:
+            label = vector_name or "<default>"
+            actual_dim = getattr(params, "size", None)
+            actual_distance = _distance_name(getattr(params, "distance", None))
+            if actual_dim != expected_dim:
+                raise QdrantCollectionSchemaError(
+                    f"Qdrant 集合 {self.config.QDRANT_COLLECTION_NAME} 向量 {label} "
+                    f"维度不匹配：实际 {actual_dim}，配置 {expected_dim}"
+                )
+            if actual_distance != expected_distance:
+                raise QdrantCollectionSchemaError(
+                    f"Qdrant 集合 {self.config.QDRANT_COLLECTION_NAME} 向量 {label} "
+                    f"距离度量不匹配：实际 {actual_distance}，配置 {expected_distance}"
+                )
 
     def insert_vectors(
         self,

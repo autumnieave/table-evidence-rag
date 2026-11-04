@@ -15,7 +15,7 @@
     import pymysql
     from tools.sql_validator import compile_check, load_schema, validate_sql
 
-    conn = pymysql.connect(host="127.0.0.1", user="root", password="***",
+    conn = pymysql.connect(host="127.0.0.1", user="rag_reader", password="***",
                            database="financial_database", charset="utf8mb4")
     schema = load_schema(conn)
     ok, errors = validate_sql(sql_text, schema)
@@ -40,6 +40,12 @@ WHITELIST_TABLES: Tuple[str, ...] = (
     "income_sheet",
 )
 
+#: 单条 SELECT 允许返回的最大行数（执行层硬上限）
+MAX_SELECT_ROWS: int = 100
+#: 默认只读 MySQL 账号；禁止使用 root 直连业务查询
+DEFAULT_MYSQL_READER_USER: str = "rag_reader"
+FORBIDDEN_MYSQL_USERS: frozenset = frozenset({"root"})
+
 _FROM_KEYWORDS = ("FROM", "JOIN")
 _STOP_KEYWORDS = (
     "WHERE", "ON", "USING", "GROUP", "HAVING", "ORDER", "LIMIT",
@@ -52,6 +58,138 @@ _QUALIFIED_RE = re.compile(
 )
 #: 匹配裸字段名 col / `col`
 _BARE_RE = re.compile(r"^`?([A-Za-z_][A-Za-z0-9_]*)$")
+#: 语句末尾的 LIMIT 子句（支持 LIMIT n / LIMIT n OFFSET m / LIMIT m, n）
+_LIMIT_AT_END_RE = re.compile(
+    r"(?is)\bLIMIT\s+(?P<first>\d+)"
+    r"(?:\s*,\s*(?P<second>\d+))?"
+    r"(?:\s+OFFSET\s+(?P<offset>\d+))?\s*$"
+)
+
+
+def _strip_sql_comments(sql: str) -> str:
+    """去掉 SQL 中的注释，字符串字面量内部的内容原样保留。
+
+    目的：避免 ``SELECT ... LIMIT 100000 -- 说明`` 这类尾随注释把追加的
+    ``LIMIT`` 注释掉，绕过执行层行数上限。支持 ``--`` / ``#`` 行注释与
+    ``/* */`` 块注释，并识别单引号、双引号、反引号及转义。
+    """
+    text = str(sql or "")
+    out: List[str] = []
+    index = 0
+    length = len(text)
+    quote = ""
+    while index < length:
+        ch = text[index]
+        if quote:
+            out.append(ch)
+            if ch == "\\" and quote in ("'", '"') and index + 1 < length:
+                out.append(text[index + 1])
+                index += 2
+                continue
+            if ch == quote:
+                if index + 1 < length and text[index + 1] == quote:
+                    out.append(text[index + 1])
+                    index += 2
+                    continue
+                quote = ""
+            index += 1
+            continue
+        if ch in ("'", '"', "`"):
+            quote = ch
+            out.append(ch)
+            index += 1
+            continue
+        if text.startswith("--", index) and (
+            index + 2 >= length or text[index + 2].isspace()
+        ):
+            newline = text.find("\n", index)
+            if newline == -1:
+                break
+            out.append("\n")
+            index = newline + 1
+            continue
+        if ch == "#":
+            newline = text.find("\n", index)
+            if newline == -1:
+                break
+            out.append("\n")
+            index = newline + 1
+            continue
+        if text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            if end == -1:
+                break
+            out.append(" ")
+            index = end + 2
+            continue
+        out.append(ch)
+        index += 1
+    return "".join(out)
+
+
+def ensure_readonly_mysql_user(user: str) -> str:
+    """校验 MySQL 业务账号不是 root；返回规范化用户名。
+
+    只读账号的权限由 ``database/create_readonly_user.sql`` 授予。这里禁止 root
+    作为运行时业务账号，避免 SQL 生成链路拥有库级写权限。
+    """
+    normalized = str(user or "").strip()
+    principal = normalized.split("@", 1)[0].strip().lower()
+    if not normalized:
+        raise ValueError(f"MySQL 用户名为空，必须配置只读账号 {DEFAULT_MYSQL_READER_USER}")
+    if principal in FORBIDDEN_MYSQL_USERS:
+        raise ValueError(
+            f"禁止使用 root 连接业务查询，请改用只读账号 {DEFAULT_MYSQL_READER_USER}"
+        )
+    return normalized
+
+
+def enforce_select_limit(sql: str, max_limit: int = MAX_SELECT_ROWS) -> str:
+    """为每条 SELECT 强制设置不超过 ``max_limit`` 的返回行数。
+
+    - 无 LIMIT：追加 ``LIMIT max_limit``；
+    - 已有 LIMIT 且大于上限：收敛到上限；
+    - 已有 LIMIT 且不超过上限：保留原值；
+    - 非 SELECT：直接抛 ``ValueError``，不交给数据库执行。
+
+    多条语句按分号拆分后逐条处理。仅识别语句末尾的顶层 LIMIT，避免误改子查询。
+    """
+    cap = int(max_limit)
+    if cap <= 0:
+        raise ValueError("max_limit 必须为正整数")
+    statements = [s.strip() for s in sqlparse.split(sql or "") if s.strip()]
+    if not statements:
+        raise ValueError("未解析到 SQL 语句")
+
+    bounded: List[str] = []
+    for raw in statements:
+        stmt = _strip_sql_comments(raw).rstrip(";").strip()
+        if not stmt:
+            continue
+        if not stmt.upper().startswith("SELECT"):
+            raise ValueError(f"仅允许执行 SELECT，拒绝语句：{stmt[:60]}")
+        match = _LIMIT_AT_END_RE.search(stmt)
+        if match is None:
+            bounded.append(f"{stmt} LIMIT {cap}")
+            continue
+
+        prefix = stmt[: match.start()].rstrip()
+        first = int(match.group("first"))
+        second = match.group("second")
+        offset = match.group("offset")
+        if second is not None:
+            count = min(int(second), cap)
+            clause = f"LIMIT {first}, {count}"
+        elif offset is not None:
+            count = min(first, cap)
+            clause = f"LIMIT {count} OFFSET {offset}"
+        else:
+            clause = f"LIMIT {min(first, cap)}"
+        bounded.append(f"{prefix} {clause}")
+
+    if not bounded:
+        raise ValueError("未解析到 SQL 语句")
+    return ";\n".join(bounded)
 
 
 def load_schema(conn) -> Dict[str, Dict[str, str]]:
@@ -328,6 +466,7 @@ def compile_check(conn, sql: str, max_execution_time: int = 15000) -> str:
     statements = [s.strip() for s in sqlparse.split(sql) if s.strip()]
     for stmt in statements:
         try:
+            stmt = enforce_select_limit(stmt)
             with conn.cursor() as cur:
                 cur.execute("SET SESSION MAX_EXECUTION_TIME = %s" % max_execution_time)
                 cur.execute(stmt)

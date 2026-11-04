@@ -524,6 +524,9 @@ def _execute_sql(conn: Any, sql: str) -> List[Dict[str, Any]]:
     try:
         rows: List[Dict[str, Any]] = []
         for statement in stmts:
+            from tools.sql_validator import enforce_select_limit
+
+            statement = enforce_select_limit(statement)
             cur.execute(statement)
             columns = [d[0] for d in (cur.description or [])]
             if not columns:
@@ -790,6 +793,14 @@ def _generate_sql(
             _contract_stats().record("sql_output", False, sql_res.errors)
             continue
         _contract_stats().record("sql_output", True, [])
+        # 执行层硬上限：无论模型是否写 LIMIT，单条 SELECT 最多返回 100 行。
+        try:
+            from tools.sql_validator import enforce_select_limit
+
+            sql = enforce_select_limit(sql)
+        except ValueError as exc:
+            errors.append(f"LIMIT 安全策略拒绝: {exc}")
+            continue
         # 三层防线：静态校验 + MySQL 编译终审
         try:
             from tools.sql_validator import compile_check, validate_sql
@@ -1145,6 +1156,18 @@ def native_financial_query(rag: Any, user_query: str, user_id: str = "default") 
             cache_key = None
     try:
         retries = int(getattr(config, "AGENT_NATIVE_RETRY", 2)) if config else 2
+        # 只读账号 fail-fast：给出可操作的配置错误，而不是笼统的“系统不可用”。
+        try:
+            from tools.sql_validator import ensure_readonly_mysql_user
+
+            ensure_readonly_mysql_user(getattr(config, "MYSQL_USER", ""))
+        except ValueError as exc:
+            content, _tid = build_refuse_system_unavailable(f"MySQL 只读账号配置错误：{exc}")
+            _log_fallback(_tid, detail="mysql_readonly_user_invalid")
+            return json.dumps(
+                {"content": content, "image": [], "sql": "", "chart_json": None},
+                ensure_ascii=False,
+            )
         schema, conn = _load_schema_conn(config)
         if conn is None or schema is None:
             content, _tid = build_refuse_system_unavailable("MySQL schema/连接加载失败")
@@ -1155,6 +1178,9 @@ def native_financial_query(rag: Any, user_query: str, user_id: str = "default") 
         run_conn = None
         try:
             import pymysql
+            from tools.sql_validator import ensure_readonly_mysql_user
+
+            ensure_readonly_mysql_user(config.MYSQL_USER)
 
             run_conn = pymysql.connect(
                 host=config.MYSQL_HOST,

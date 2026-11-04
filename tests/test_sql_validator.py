@@ -4,7 +4,15 @@
 样例取自 9 条 badcase（B2049/B2075/B2063 等）的原始失败 SQL。
 """
 
-from tools.sql_validator import parse_sql, validate_sql
+import pytest
+
+from tools.sql_validator import (
+    MAX_SELECT_ROWS,
+    enforce_select_limit,
+    ensure_readonly_mysql_user,
+    parse_sql,
+    validate_sql,
+)
 
 
 def _schema() -> dict:
@@ -80,3 +88,78 @@ def test_parse_sql_structure():
     parsed = parse_sql(sql)
     assert parsed is not None
     assert "core_performance_indicators_sheet" in parsed.get("tables", [])
+
+
+def test_enforce_select_limit_appends_default():
+    sql = "SELECT stock_abbr FROM core_performance_indicators_sheet WHERE report_year = 2024"
+    limited = enforce_select_limit(sql)
+    assert limited.endswith(f"LIMIT {MAX_SELECT_ROWS}")
+
+
+def test_enforce_select_limit_clamps_large_limit():
+    sql = "SELECT stock_abbr FROM core_performance_indicators_sheet LIMIT 500"
+    assert enforce_select_limit(sql).endswith(f"LIMIT {MAX_SELECT_ROWS}")
+
+
+def test_enforce_select_limit_keeps_smaller_limit():
+    sql = "SELECT stock_abbr FROM core_performance_indicators_sheet LIMIT 5"
+    assert enforce_select_limit(sql).endswith("LIMIT 5")
+
+
+def test_enforce_select_limit_preserves_offset_forms():
+    assert enforce_select_limit(
+        "SELECT stock_abbr FROM core_performance_indicators_sheet LIMIT 10, 500"
+    ).endswith("LIMIT 10, 100")
+    assert enforce_select_limit(
+        "SELECT stock_abbr FROM core_performance_indicators_sheet LIMIT 500 OFFSET 20"
+    ).endswith("LIMIT 100 OFFSET 20")
+
+
+def test_enforce_select_limit_handles_multiple_statements():
+    sql = (
+        "SELECT stock_abbr FROM core_performance_indicators_sheet;"
+        "SELECT stock_abbr FROM income_sheet LIMIT 500;"
+    )
+    limited = enforce_select_limit(sql)
+    assert limited.count("LIMIT 100") == 2
+
+
+def test_enforce_select_limit_rejects_non_select():
+    with pytest.raises(ValueError, match="仅允许执行 SELECT"):
+        enforce_select_limit("DELETE FROM income_sheet")
+
+
+def test_readonly_mysql_user_guard():
+    assert ensure_readonly_mysql_user("rag_reader") == "rag_reader"
+    with pytest.raises(ValueError, match="禁止使用 root"):
+        ensure_readonly_mysql_user("root")
+    with pytest.raises(ValueError, match="禁止使用 root"):
+        ensure_readonly_mysql_user("root@localhost")
+
+
+def test_enforce_select_limit_strips_trailing_line_comment():
+    sql = "SELECT stock_abbr FROM core_performance_indicators_sheet LIMIT 50000 -- 全量导出"
+    limited = enforce_select_limit(sql)
+    assert limited.endswith("LIMIT 100")
+    assert "--" not in limited
+
+
+def test_enforce_select_limit_keeps_double_dash_inside_string():
+    sql = "SELECT stock_abbr FROM core_performance_indicators_sheet WHERE note = 'a -- b'"
+    limited = enforce_select_limit(sql)
+    assert "'a -- b'" in limited
+    assert limited.endswith("LIMIT 100")
+
+
+def test_enforce_select_limit_handles_leading_comment_and_block_comment():
+    sql = "-- 统计口径\nSELECT stock_abbr FROM core_performance_indicators_sheet /* 全量 */ LIMIT 500"
+    limited = enforce_select_limit(sql)
+    assert limited.lstrip().startswith("SELECT")
+    assert "/*" not in limited
+    assert "--" not in limited
+    assert limited.endswith("LIMIT 100")
+
+
+def test_enforce_select_limit_rejects_comment_only_statement():
+    with pytest.raises(ValueError, match="未解析到 SQL 语句"):
+        enforce_select_limit("-- 只有注释")

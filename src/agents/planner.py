@@ -32,7 +32,9 @@ def _load_schema(config) -> tuple:
         return None, None
     try:
         import pymysql
-        from tools.sql_validator import load_schema
+        from tools.sql_validator import ensure_readonly_mysql_user, load_schema
+
+        ensure_readonly_mysql_user(config.MYSQL_USER)
 
         conn = pymysql.connect(
             host=config.MYSQL_HOST, port=config.MYSQL_PORT,

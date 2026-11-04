@@ -281,10 +281,10 @@ class RAGConfig:
     """MySQL 地址（SQL 校验 schema / 编译终审用）"""
     MYSQL_PORT: int = field(default_factory=lambda: int(_env("MYSQL_PORT", "3306")))
     """MySQL 端口"""
-    MYSQL_USER: str = field(default_factory=lambda: _env("MYSQL_USER", "root"))
-    """MySQL 用户名"""
-    MYSQL_PASSWORD: str = field(default_factory=lambda: _env("MYSQL_PASSWORD", "123456"))
-    """MySQL 密码（生产环境请用环境变量覆盖）"""
+    MYSQL_USER: str = field(default_factory=lambda: _env("MYSQL_USER", "rag_reader"))
+    """MySQL 只读账号；root 会在运行期被拒绝"""
+    MYSQL_PASSWORD: str = field(default_factory=lambda: _env("MYSQL_PASSWORD", "change_me"))
+    """MySQL 只读账号密码（生产环境必须用环境变量覆盖）"""
     MYSQL_DATABASE: str = field(default_factory=lambda: _env("MYSQL_DATABASE", "financial_database"))
     """MySQL 库名（含 4 张财务白名单表）"""
 

@@ -100,7 +100,7 @@ docker compose down -v                     # 停止并清理数据卷（慎用�
 | `AGENT_SQL_VALIDATE` | `true` | SQL 输出守卫开关（静态校验 + MySQL 编译，失败带错误提示重问） |
 | `AGENT_NATIVE_RETRY` | `2` | 原生 SQL 生成失败重试次数 |
 | `LLM_TIMEOUT` | `300` | LLM 调用超时（秒，Agent 长轨迹兜底） |
-| `MYSQL_HOST/PORT/USER/PASSWORD/DATABASE` | `127.0.0.1:3306` / `root` / `financial_database` | SQL 守卫编译终审连接（schema 见 `database/schema.sql`，仅表结构，数据需自行抽取入库） |
+| `MYSQL_HOST/PORT/USER/PASSWORD/DATABASE` | `127.0.0.1:3306` / `rag_reader` / `financial_database` | SQL 守卫编译终审连接（仅允许只读账号，root 会被运行时拒绝；建号脚本见 `database/create_readonly_user.sql`） |
 
 ## 6. 常见问题
 
