@@ -118,6 +118,37 @@ python -m eval citation           # RAG-L1 引用核验
 python -m eval challenge --run    # RAG-L3 对抗挑战集
 ```
 
+## 前端联调验证（qa-frontend）
+
+前端为 Vite + React，生产构建经 Nginx 同源反代到后端（`/chat/stream` 已关闭 `proxy_buffering`，SSE 不会被缓冲）。
+
+```bash
+docker compose up -d --build
+# 前端：http://localhost:8080
+# API 文档：http://localhost:18000/docs
+
+# 自动化契约检查（SSE / 语义缓存 / 429）
+.\.venv\Scripts\python.exe eval/frontend_contract_check.py --base-url http://localhost:8080
+```
+
+手工验证三条链路：
+
+1. **普通 RAG 流式**：提问「片仔癀2024年营业收入是多少？」，答案逐字输出；Network 中 `/chat/stream` 依次出现 `meta` → `stage` → `content` → `done`。
+2. **Semantic Cache**：紧接着提问同义改写「片仔癀2024年营收有多少」，消息顶部出现「⚡ 语义缓存命中」标签，响应由 20s+ 降至 1s 内。
+3. **限流**：同一 `user_id` 超过 `USER_RATE_LIMIT_PER_MINUTE` 后返回 429，前端显示「⏳ 请求过于频繁，请 N 秒后重试」，不白屏。
+
+实测（2026-11-05，本机 Docker Compose，Nginx 同源入口）：
+
+| 检查项 | 结果 |
+| --- | --- |
+| `GET /health` | 200 |
+| SSE 事件 | `meta` / `stage` / `content` / `done` |
+| 首次提问 | 22.43s，`cache_hit=false` |
+| 同义改写 | **0.94s**，`cache_hit=true`、`cache_layer=semantic`、similarity 0.934 |
+| 超限请求 | 429，`Retry-After: 60` |
+
+> 前端 `user_id` 按会话生成（`session-<id>`），刷新后从 localStorage 恢复；旧会话缺少 `userId` 时自动补齐，避免多会话共用同一份后端记忆。
+
 ## 边界与 Trade-off 声明
 
 1. **SQL Tool 定位**：SQL 是 Agent 的受控 Tool，主要用于精确查数。我们通过多层安全拦截与柔性审计确保安全，但不代表 SQL 返回结果 100% 业务正确。

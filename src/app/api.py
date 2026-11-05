@@ -436,7 +436,8 @@ async def chat_stream(request: ChatRequest, http_request: Request):
                 references = hit.get("references", []) if isinstance(hit, dict) else []
                 chart_json = hit.get("chart_json") if isinstance(hit, dict) else None
                 meta = json.dumps(
-                    {"type": "meta", "image": _normalize_images(image), "references": references, "chart_json": chart_json},
+                    {"type": "meta", "image": _normalize_images(image), "references": references,
+                     "chart_json": chart_json, "cache_hit": True, "cache_layer": "exact"},
                     ensure_ascii=False,
                 )
                 yield f"data: {meta}\n\n"
@@ -466,7 +467,9 @@ async def chat_stream(request: ChatRequest, http_request: Request):
                 references = semantic_hit.get("references", []) if isinstance(semantic_hit, dict) else []
                 chart_json = semantic_hit.get("chart_json") if isinstance(semantic_hit, dict) else None
                 meta = json.dumps(
-                    {"type": "meta", "image": _normalize_images(image), "references": references, "chart_json": chart_json},
+                    {"type": "meta", "image": _normalize_images(image), "references": references,
+                     "chart_json": chart_json, "cache_hit": True, "cache_layer": "semantic",
+                     "semantic_similarity": getattr(semantic, "last_similarity", None)},
                     ensure_ascii=False,
                 )
                 yield f"data: {meta}\n\n"
@@ -536,7 +539,8 @@ async def chat_stream(request: ChatRequest, http_request: Request):
                     references = result.get("references", []) if isinstance(result, dict) else []
                     chart_json = result.get("chart_json") if isinstance(result, dict) else None
                     meta = json.dumps(
-                        {"type": "meta", "image": _normalize_images(image), "references": references, "chart_json": chart_json},
+                        {"type": "meta", "image": _normalize_images(image), "references": references,
+                         "chart_json": chart_json, "cache_hit": False, "cache_layer": None},
                         ensure_ascii=False,
                     )
                     yield f"data: {meta}\n\n"

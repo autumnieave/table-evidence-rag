@@ -111,3 +111,4 @@ docs/岗位叙事侧重_20261023.md
 *.db
 # 日志（注意：不忽略 *.jsonl，避免误伤 src/prompts/examples/*.jsonl）
 *.log
+redis_data/

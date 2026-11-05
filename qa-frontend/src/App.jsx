@@ -133,7 +133,11 @@ const loadSessions = () => {
       if (Array.isArray(parsed) && parsed.length > 0) {
         return parsed
           .filter(s => s && Array.isArray(s.messages))
-          .map(s => ({ ...s, messages: (s.messages || []).filter(m => !m.isStreaming) }))
+          .map(s => ({
+            ...s,
+            userId: s.userId || ('session-' + s.id),
+            messages: (s.messages || []).filter(m => !m.isStreaming),
+          }))
           .slice(-MAX_SESSIONS);
       }
     }
@@ -306,6 +310,9 @@ function App() {
       image: [],
       references: [],
       chart_json: null,
+      cache_hit: false,
+      cache_layer: null,
+      route: null,
       id: aiMsgId,
       ts: Date.now(),
       isStreaming: true,
@@ -326,13 +333,19 @@ function App() {
       const response = await fetch(`${API_URL}/chat/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, mode, user_id: activeSession?.userId || 'default' }),
+        body: JSON.stringify({ question, mode, user_id: activeSession?.userId || ('session-' + (activeSession?.id || 'anon')) }),
         signal: controller.signal,
       });
       if (!response.ok) {
         let detail = `HTTP ${response.status}`;
-        try { const d = await response.json(); detail = d.detail || detail; } catch { /* 忽略 */ }
-        throw new Error(detail);
+        try {
+          const d = await response.json();
+          detail = typeof d?.detail === 'string' ? d.detail : (d?.detail ? JSON.stringify(d.detail) : detail);
+        } catch { /* 忽略 */ }
+        const err = new Error(detail);
+        err.status = response.status;
+        err.retryAfter = response.headers.get('Retry-After');
+        throw err;
       }
 
       const reader = response.body.getReader();
@@ -344,6 +357,9 @@ function App() {
       let lineBuffer = ''; // SSE 事件可能跨 TCP 分片，必须缓存残行
       let sawReports = false; // 本次是否走过研报检索（用于引用缺失自诊断）
       let finalPhase = false; // final 之后的终稿阶段：静默累积，等 done 一次性落地
+      let cacheHit = false; // 来自 meta.cache_hit（精确/语义缓存）
+      let cacheLayer = null; // exact / semantic
+      let route = null; // sql / rag：由 stage 事件推断意图路由
 
       while (true) {
         const { done, value } = await reader.read();
@@ -364,9 +380,15 @@ function App() {
               image = parsed.image || [];
               references = parsed.references || [];
               if (parsed.chart_json) chartJson = parsed.chart_json;
+              if (parsed.cache_hit) {
+                cacheHit = true;
+                cacheLayer = parsed.cache_layer || 'exact';
+                updateMessage(aiMsgId, { cache_hit: true, cache_layer: cacheLayer });
+              }
             } else if (parsed.type === 'stage') {
               setStage(parsed.stage);
-              if (parsed.stage === 'search_reports') sawReports = true;
+              if (parsed.stage === 'search_reports') { sawReports = true; route = 'rag'; }
+              if (parsed.stage === 'query_financial') route = 'sql';
             } else if (parsed.type === 'final') {
               // 混合题：草稿与终稿高度重复，逐字重放会像"打印两遍"——改为静默累积，等 done 一次性落地
               finalPhase = true;
@@ -378,7 +400,7 @@ function App() {
               }
             } else if (parsed.type === 'done') {
               setStage(null);
-              updateMessage(aiMsgId, { content: fullContent, image, references, chart_json: chartJson, isStreaming: false, refsMissing: sawReports && references.length === 0 });
+              updateMessage(aiMsgId, { content: fullContent, image, references, chart_json: chartJson, isStreaming: false, refsMissing: sawReports && references.length === 0, cache_hit: cacheHit, cache_layer: cacheLayer, route });
             } else if (parsed.type === 'error') {
               setStage(null);
               updateMessage(aiMsgId, { content: `❌ ${parsed.message || '生成出错'}`, isStreaming: false, error: true });
@@ -392,9 +414,21 @@ function App() {
       if (error.name === 'AbortError') {
         // 用户点击「停止」中断
         updateMessage(aiMsgId, { content: '⏹ 已停止生成', isStreaming: false, stopped: true });
+      } else if (error.status === 429) {
+        const retry = parseInt(error.retryAfter || '0', 10);
+        const wait = retry > 0 ? `，请 ${retry} 秒后重试` : '，请稍后重试';
+        updateMessage(aiMsgId, {
+          content: `⏳ 请求过于频繁${wait}`,
+          isStreaming: false,
+          rateLimited: true,
+          retryAfter: retry || null,
+          question,
+        });
+      } else if (error.status === 401 || error.status === 403) {
+        updateMessage(aiMsgId, { content: `🔒 鉴权失败（HTTP ${error.status}）：请检查前端配置的 API Key`, isStreaming: false, error: true, question });
       } else {
         console.error('请求失败:', error);
-        updateMessage(aiMsgId, { content: '❌ 请求失败，请检查后端服务是否启动', isStreaming: false, error: true, question });
+        updateMessage(aiMsgId, { content: `❌ 请求失败（${error.message || '未知错误'}），请检查后端服务是否启动`, isStreaming: false, error: true, question });
       }
     } finally {
       abortRef.current = null;
@@ -585,6 +619,25 @@ function App() {
 
     return (
       <div className="space-y-2">
+        {(msg.cache_hit || msg.route) && (
+          <div className="flex flex-wrap items-center gap-2">
+            {msg.cache_hit && (
+              <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                ⚡ {msg.cache_layer === 'semantic' ? '语义缓存命中' : '来自缓存'}
+              </span>
+            )}
+            {msg.route === 'sql' && (
+              <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+                🗄 SQL 查数
+              </span>
+            )}
+            {msg.route === 'rag' && (
+              <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                📄 研报检索
+              </span>
+            )}
+          </div>
+        )}
         {DEMO_MASK && !msg.error && !msg.stopped ? (
           <DemoAnswer />
         ) : (

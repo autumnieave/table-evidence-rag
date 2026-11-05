@@ -29,6 +29,16 @@ services:
     # 不设 healthcheck：qdrant 基础镜像无 wget/curl，避免一直 unhealthy；
     # backend 仅依赖容器启动（service_started）。
 
+  # ==================== Redis（语义缓存 + 分布式限流） ====================
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - 6379:6379
+    volumes:
+      - ./redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+
   # ==================== FastAPI 后端 ====================
   backend:
     build:
@@ -62,6 +72,15 @@ services:
       - HYBRID_ENABLED=${HYBRID_ENABLED:-true}
       - GENERATOR_CONTEXT_TOP_N=${GENERATOR_CONTEXT_TOP_N:-10}
       - CITATION_CORPUS_ROOT=${CITATION_CORPUS_ROOT:-data_corpus/全部数据/正式数据/附件5：研报数据}
+      # ---- Redis：语义缓存 + 分布式限流（compose 内 redis 服务）----
+      - SEMANTIC_CACHE_ENABLED=${SEMANTIC_CACHE_ENABLED:-true}
+      - SEMANTIC_CACHE_REDIS_URL=redis://redis:6379/1
+      - SEMANTIC_CACHE_THRESHOLD=${SEMANTIC_CACHE_THRESHOLD:-0.92}
+      - API_RATE_LIMIT_BACKEND=${API_RATE_LIMIT_BACKEND:-redis}
+      - API_RATE_LIMIT_REDIS_URL=redis://redis:6379/2
+      - USER_RATE_LIMIT_ENABLED=${USER_RATE_LIMIT_ENABLED:-true}
+      - USER_RATE_LIMIT_PER_MINUTE=${USER_RATE_LIMIT_PER_MINUTE:-20}
+      - AGENT_LANGGRAPH_CHECKPOINT_BACKEND=${AGENT_LANGGRAPH_CHECKPOINT_BACKEND:-sqlite}
       # ---- 记忆（SQLite 默认；Redis 需自备/另起）----
       - MEMORY_BACKEND=${MEMORY_BACKEND:-sqlite}
       - MEMORY_DB_PATH=/app/database/chat_memory.db
@@ -75,6 +94,8 @@ services:
       - MYSQL_DATABASE=${MYSQL_DATABASE:-financial_database}
     depends_on:
       qdrant:
+        condition: service_started
+      redis:
         condition: service_started
 
   # ==================== Nginx 前端 ====================
