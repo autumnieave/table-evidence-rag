@@ -20,7 +20,7 @@ class ChatResponse(BaseModel):
     image: List[str] = []
     references: List[dict] = []
     chart_json: Optional[Dict] = None
-    route_type: Optional[Literal["financial", "research", "mixed"]] = None
+    route_type: Optional[Literal["rag", "financial", "research", "mixed"]] = None
 
 
 class ClarifyRequest(BaseModel):

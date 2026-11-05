@@ -7,16 +7,16 @@
 
 本项目以结构保留解析、行级事实、混合检索、Agent 证据选择与 Claim 级评测构成闭环。不仅跑通了算法链路，还完成了服务化交付与高并发降本观测。
 
-**技术栈**：Python · FastAPI (SSE) · LangGraph · Qdrant · Redis · Semantic Cache · Cross-Encoder · pytest (1085 单测)
+**技术栈**：Python · FastAPI (SSE) · LangGraph · Qdrant · Redis · Semantic Cache · Cross-Encoder · pytest (1086 单测)
 
-[![CI](https://github.com/autumnieave/table-evidence-rag/actions/workflows/ci.yml/badge.svg)](https://github.com/autumnieave/table-evidence-rag/actions/workflows/ci.yml) [![tests](https://img.shields.io/badge/1085%20tests-passing-brightgreen)]() [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![CI](https://github.com/autumnieave/table-evidence-rag/actions/workflows/ci.yml/badge.svg)](https://github.com/autumnieave/table-evidence-rag/actions/workflows/ci.yml) [![tests](https://img.shields.io/badge/1086%20tests-passing-brightgreen)]() [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 ## 核心指标与工程收益
 
 - **解析与表征**：受控 Gold Set TEDS 1.0（解决跨页/合并单元格），碎片 Chunk 减少 99.4%，建立 Cell-Level Anchors 支撑数字级溯源。
 - **检索与重排**：针对跨期/跨公司噪声，引入 Schema-Aware 前置硬过滤与 Cross-Encoder 两阶段精排，表级 Hit@10 从 25% 提升至 87.5%，MRR@10 从 0.1292 提升至 0.7326。
 - **降本与高并发**：引入 Semantic Cache 拦截重复 Query，免去昂贵的 LLM 生成 Token，端到端 P50 从 22.3s 降至 0.26s（提速 85.9 倍）；基于 Redis+Lua 实现分布式滑动窗口限流。
-- **工程闭环**：基于 Docker Compose 一键编排交付；打通 SSE 流式输出（首字延迟从 38.3s 降至 0.674s）；配套 1085 条离线单测，CI 自动执行。
+- **工程闭环**：基于 Docker Compose 一键编排交付；打通 SSE 流式输出（首字延迟从 38.3s 降至 0.674s）；配套 1086 条离线单测，CI 自动执行。
 
 ## 架构图
 
@@ -74,7 +74,7 @@ flowchart LR
 
 ```bash
 pip install -r requirements.txt
-python -m pytest tests/ -q    # 1085 个离线单测，无需 API Key / 数据库
+python -m pytest tests/ -q    # 1086 个离线单测，无需 API Key / 数据库
 ```
 
 ### 完整服务运行
@@ -109,7 +109,7 @@ docker compose up -d --build
 ## 测试与评估
 
 ```bash
-# 运行全部单测 (1085 passed)
+# 运行全部单测 (1086 passed)
 python -m pytest tests/ -q
 
 # 运行评测闭环 (需本地 golden 数据支持)
@@ -164,8 +164,8 @@ data: {"type": "...", ...}
 
 时序（按实际实现）：
 
-- **RAG 未命中缓存**：`content...` → `meta` → `done`
-- **精确/语义缓存命中**：`meta` → `content...` → `done`
+- **RAG 未命中缓存**：`content...` → `meta` → `done`（大模型生成完毕后，核验器才会下发引用 `meta`）
+- **精确/语义缓存命中**：`meta` → `content...` → `done`（无生成过程，直接返回缓存结果）
 - **Agent 多工具**：`stage...` → `content...`（子 Agent 草稿）→ `stage(generate)` → `meta` → `final` → `content...`（终稿）→ `done`
 - **失败**：`...` → `error(retryable=...)`，流随后关闭
 
@@ -236,6 +236,7 @@ SSE_RESUME_TTL_SECONDS=1800
 2. **精排模型选择**：消融实验基于本地 BGE-Reranker，受限于单机内存；线上为了低延迟切换为云端 `qwen3-rerank` API，以保障吞吐与延迟。
 3. **评测集性质**：24 题/22 题盲测集用于消融方向验证与指标纠偏，属于小样本，不作为统计学意义上的绝对泛化能力证明。
 4. **缓存降级边界**：语义缓存采用内存 O(n) 余弦相似度匹配，在 <1000 条缓存时性能极佳（约 226ms 内），若大规模上生产将替换为 RediSearch 或专用向量索引。Checkpoint 强依赖 Redis Stack。
+5. **MySQL 降级边界**：MySQL 缺失或凭据错误时，系统会自动拦截并返回结构化拒答（HTTP 200），不影响 RAG 主流程；SQL Tool 的失败不会升级为 500。
 
 ## License
 

@@ -331,6 +331,17 @@ async def cache_stats():
         "semantic": semantic.stats() if semantic is not None else None,
     }
 
+
+def _with_default_route_type(result: Any, mode: str) -> Any:
+    """RAG 同步接口补默认路由；agent 保持真实路由或 None。"""
+    if not isinstance(result, dict):
+        result = {"content": str(result or ""), "image": [], "references": []}
+    if mode == "rag" and not result.get("route_type"):
+        result = dict(result)
+        result["route_type"] = "rag"
+    return result
+
+
 def _normalize_images(images: List[str]) -> List[str]:
     """
     将后端图片路径统一为可访问的相对 URL：
@@ -374,7 +385,7 @@ async def chat(request: ChatRequest, http_request: Request, response: Response):
             if isinstance(hit, dict) and hit.get("image"):
                 hit["image"] = _normalize_images(hit["image"])
             response.headers["X-Cache-Status"] = "exact_hit"
-            return hit
+            return _with_default_route_type(hit, request.mode)
 
     semantic = _get_semantic_cache()
     semantic_ns = f"{(request.mode or 'rag')}:{request.user_id}"
@@ -390,7 +401,7 @@ async def chat(request: ChatRequest, http_request: Request, response: Response):
                 semantic_hit["image"] = _normalize_images(semantic_hit["image"])
             response.headers["X-Cache-Status"] = "semantic_hit"
             response.headers["X-Semantic-Similarity"] = str(semantic.last_similarity)
-            return semantic_hit
+            return _with_default_route_type(semantic_hit, request.mode)
 
     try:
         if request.mode == "agent":
@@ -405,6 +416,7 @@ async def chat(request: ChatRequest, http_request: Request, response: Response):
         # 兼容字符串返回
         if isinstance(result, str):
             result = {"content": result, "image": [], "references": []}
+        result = _with_default_route_type(result, request.mode)
         if cache is not None and cache_key is not None:
             cache.set(cache_key, result)
         if semantic is not None:

@@ -124,12 +124,12 @@ class RAGConfig:
     """Agent 编排循环是否开启思考模式（qwen3.5-plus 推理模型：默认关闭避免耗尽 max_tokens，env AGENT_ENABLE_THINKING=true 可开启）"""
     AGENT_LANGGRAPH_CHECKPOINT: bool = field(default_factory=lambda: _env("AGENT_LANGGRAPH_CHECKPOINT", "true").lower() == "true")
     """LangGraph 后端是否启用 checkpointer（thread_id=user_id 会话记忆持久化；仅 langgraph 编排后端生效，env AGENT_LANGGRAPH_CHECKPOINT=false 可关）"""
-    AGENT_LANGGRAPH_CHECKPOINT_BACKEND: str = field(default_factory=lambda: _env("AGENT_LANGGRAPH_CHECKPOINT_BACKEND", "sqlite"))
-    """LangGraph checkpoint 后端：sqlite=落盘（默认，需 langgraph-checkpoint-sqlite 包）/ memory=进程内存 / none=关闭"""
+    AGENT_LANGGRAPH_CHECKPOINT_BACKEND: str = field(default_factory=lambda: _env("AGENT_LANGGRAPH_CHECKPOINT_BACKEND", "redis"))
+    """LangGraph checkpoint 后端：redis=项目内 Redis Stack（默认）/ sqlite=落盘 / memory=进程内存 / none=关闭"""
     AGENT_LANGGRAPH_CHECKPOINT_PATH: str = field(default_factory=lambda: _env("AGENT_LANGGRAPH_CHECKPOINT_PATH", "database/langgraph_checkpoints.sqlite"))
     """LangGraph checkpoint SQLite 文件路径（运行时数据，已 gitignore）"""
-    AGENT_LANGGRAPH_CHECKPOINT_REDIS_URL: str = field(default_factory=lambda: _env("AGENT_LANGGRAPH_CHECKPOINT_REDIS_URL", "redis://localhost:6380/0"))
-    """LangGraph checkpoint Redis 连接串（需 RedisJSON + RediSearch，即 Redis Stack；默认端口 6380 避免与普通 Redis 混用）"""
+    AGENT_LANGGRAPH_CHECKPOINT_REDIS_URL: str = field(default_factory=lambda: _env("AGENT_LANGGRAPH_CHECKPOINT_REDIS_URL", "redis://localhost:6379/0"))
+    """LangGraph checkpoint Redis 连接串（需 RedisJSON + RediSearch，即 Redis Stack；默认复用项目内 Redis Stack :6379）"""
     AGENT_LANGGRAPH_MAX_HISTORY: int = field(default_factory=lambda: int(_env("AGENT_LANGGRAPH_MAX_HISTORY", "40")))
     """LangGraph checkpoint 读回的历史消息条数上限（保留首条 system 提示词）"""
     AGENT_LANGGRAPH_MULTI_AGENT: bool = field(default_factory=lambda: _env("AGENT_LANGGRAPH_MULTI_AGENT", "false").lower() == "true")

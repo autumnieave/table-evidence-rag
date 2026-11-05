@@ -585,6 +585,13 @@ def test_chat_response_shape_fields(api_env) -> None:
     assert isinstance(body["image"], list) and isinstance(body["references"], list)
 
 
+def test_chat_rag_route_type_default(api_env) -> None:
+    client, *_ = api_env
+    resp = client.post("/chat", json={"question": "RAG 路由", "mode": "rag"})
+    assert resp.status_code == 200
+    assert resp.json()["route_type"] == "rag"
+
+
 def test_stream_meta_contains_references(api_env) -> None:
     client, _, _, stub_pipe = api_env
     resp = client.post("/chat/stream", json={"question": "引用校验", "mode": "rag"})

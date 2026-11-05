@@ -241,7 +241,7 @@ class LangGraphMultiAgentPlanner:
 
     # ── Checkpoint（与 LangGraphPlanner 同一契约）───────────────────────
     def _build_checkpointer(self) -> Any:
-        """按配置构建 LangGraph checkpointer：sqlite=落盘（默认）/ redis=Redis Stack / memory=进程内存 / none=关闭。
+        """按配置构建 LangGraph checkpointer：redis=Redis Stack（默认）/ sqlite=落盘 / memory=进程内存 / none=关闭。
 
         sqlite 后端依赖 langgraph-checkpoint-sqlite 包；redis 后端依赖
         langgraph-checkpoint-redis + RedisJSON/RediSearch（Redis Stack）。redis
@@ -249,7 +249,7 @@ class LangGraphMultiAgentPlanner:
         """
         if not getattr(self.config, "AGENT_LANGGRAPH_CHECKPOINT", True):
             return None
-        backend = str(getattr(self.config, "AGENT_LANGGRAPH_CHECKPOINT_BACKEND", "sqlite")).strip().lower()
+        backend = str(getattr(self.config, "AGENT_LANGGRAPH_CHECKPOINT_BACKEND", "redis")).strip().lower()
         if backend == "redis":
             try:
                 from langgraph.checkpoint.redis import RedisSaver  # noqa: PLC0415
@@ -258,7 +258,7 @@ class LangGraphMultiAgentPlanner:
                     getattr(
                         self.config,
                         "AGENT_LANGGRAPH_CHECKPOINT_REDIS_URL",
-                        "redis://localhost:6380/0",
+                        "redis://localhost:6379/0",
                     )
                 )
                 saver = RedisSaver(redis_url=url)

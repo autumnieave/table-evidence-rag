@@ -26,18 +26,26 @@ services:
       - 6334:6334
     volumes:
       - ./qdrant_storage:/qdrant/storage
-    # 不设 healthcheck：qdrant 基础镜像无 wget/curl，避免一直 unhealthy；
-    # backend 仅依赖容器启动（service_started）。
+    # Qdrant 镜像无 curl/wget，但有 bash；用 /dev/tcp 探活，端口就绪即视为 healthy。
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 300s
 
   # ==================== Redis（语义缓存 + 分布式限流） ====================
   redis:
-    image: redis:7-alpine
+    # Redis Stack：在 Redis 基础上加载 RedisJSON/RediSearch，LangGraph RedisSaver 依赖
+    image: redis/redis-stack-server:latest
     restart: unless-stopped
     ports:
       - 6379:6379
     volumes:
       - ./redis_data:/data
-    command: ["redis-server", "--appendonly", "yes"]
+    # 不能用 command 覆盖 entrypoint（会绕过模块加载）；REDIS_ARGS 由镜像 entrypoint 追加
+    environment:
+      - REDIS_ARGS=--appendonly yes
 
   # ==================== FastAPI 后端 ====================
   backend:
@@ -80,11 +88,13 @@ services:
       - API_RATE_LIMIT_REDIS_URL=redis://redis:6379/2
       - USER_RATE_LIMIT_ENABLED=${USER_RATE_LIMIT_ENABLED:-true}
       - USER_RATE_LIMIT_PER_MINUTE=${USER_RATE_LIMIT_PER_MINUTE:-20}
-      - AGENT_LANGGRAPH_CHECKPOINT_BACKEND=${AGENT_LANGGRAPH_CHECKPOINT_BACKEND:-sqlite}
-      # ---- 记忆（SQLite 默认；Redis 需自备/另起）----
+      - AGENT_LANGGRAPH_CHECKPOINT_BACKEND=${AGENT_LANGGRAPH_CHECKPOINT_BACKEND:-redis}
+      # 容器内必须用 compose 服务名（不能用 .env 里的 localhost，否则指向 backend 自身）
+      - AGENT_LANGGRAPH_CHECKPOINT_REDIS_URL=redis://redis:6379/0
+      # ---- 记忆（SQLite 默认；Redis 复用项目内 Redis Stack）----
       - MEMORY_BACKEND=${MEMORY_BACKEND:-sqlite}
       - MEMORY_DB_PATH=/app/database/chat_memory.db
-      - MEMORY_REDIS_URL=redis://host.docker.internal:6379/0
+      - MEMORY_REDIS_URL=redis://redis:6379/0
       - MEMORY_TTL_SECONDS=${MEMORY_TTL_SECONDS:-86400}
       # ---- MySQL：连宿主已导入数据的 financial_database（只读账号）----
       - MYSQL_HOST=host.docker.internal
@@ -94,7 +104,7 @@ services:
       - MYSQL_DATABASE=${MYSQL_DATABASE:-financial_database}
     depends_on:
       qdrant:
-        condition: service_started
+        condition: service_healthy
       redis:
         condition: service_started
 
