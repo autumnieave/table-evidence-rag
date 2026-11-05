@@ -16,7 +16,7 @@
 - **解析与表征**：受控 Gold Set TEDS 1.0（解决跨页/合并单元格），碎片 Chunk 减少 99.4%，建立 Cell-Level Anchors 支撑数字级溯源。
 - **检索与重排**：针对跨期/跨公司噪声，引入 Schema-Aware 前置硬过滤与 Cross-Encoder 两阶段精排，表级 Hit@10 从 25% 提升至 87.5%，MRR@10 从 0.1292 提升至 0.7326。
 - **降本与高并发**：引入 Semantic Cache 拦截重复 Query，免去昂贵的 LLM 生成 Token，端到端 P50 从 22.3s 降至 0.26s（提速 85.9 倍）；基于 Redis+Lua 实现分布式滑动窗口限流。
-- **工程闭环**：基于 Docker Compose 一键编排交付；打通 SSE 流式输出（首字延迟从 16s 降至 0.674s）；配套 1050 条离线单测，CI 自动执行。
+- **工程闭环**：基于 Docker Compose 一键编排交付；打通 SSE 流式输出（首字延迟从 38.3s 降至 0.674s）；配套 1050 条离线单测，CI 自动执行。
 
 ## 架构图
 
@@ -30,12 +30,12 @@ flowchart LR
     subgraph R[检索层]
         R1["Query 理解 + 意图路由"] --> R2["Dense + Sparse + RRF 混合召回"]
         R2 --> R3["Schema-Aware 前置硬过滤"]
-        R3 --> R4["qwen3-rerank<br/>Cross-Encoder 两阶段精排"]
+        R3 --> R4["qwen3-rerank（线上）<br/>Cross-Encoder 两阶段精排"]
     end
 
     subgraph A[Agent 与工具调度层]
         A1["LangGraph ReAct 状态机"] --> A2["研报 RAG Tool"]
-        A1 --> A3["SQL Tool (7拦截+2审计柔性护栏)"]
+        A1 --> A3["SQL Tool (多层安全拦截与柔性审计)"]
         A2 --> A4["证据动作：重写 / 换表 / 结构化拒答"]
         A3 --> A4
     end
@@ -56,7 +56,7 @@ flowchart LR
    - 引入 Parent Document 回拉机制，行级命中后向上拉取整表上下文，杜绝“表头丢失”。
 2. **混合检索与过滤精排**：
    - 基线 Dense+Sparse+RRF 受噪声干扰严重，引入 Schema 实体与年份的强制过滤，大幅收敛候选池。
-   - 引入 qwen3-rerank 对 Top-50 结果进行重排，压住长尾干扰。
+   - 线上用 qwen3-rerank 对 Top-50 结果重排，压住长尾干扰（消融实验基于 BGE-Reranker，见边界声明）。
 3. **Agent 证据治理与状态路由**：
    - 基于 LangGraph 构建状态机，当数值口径（指标/期间/单位）不匹配时触发重写/拒答。
    - 引入 Intent Routing，将精确查数分发至带安全护栏的 SQL Tool，复杂推理走 RAG。
@@ -120,8 +120,8 @@ python -m eval challenge --run    # RAG-L3 对抗挑战集
 
 ## 边界与 Trade-off 声明
 
-1. **SQL Tool 定位**：SQL 是 Agent 的受控 Tool，主要用于精确查数。我们通过 7 层拦截与 2 层审计确保安全，但不代表 SQL 返回结果 100% 业务正确。
-2. **精排模型选择**：早期探索了本地 BGE-Reranker，但受限于单机内存，最终选型为云端 API `qwen3-rerank` 以保障吞吐与延迟。
+1. **SQL Tool 定位**：SQL 是 Agent 的受控 Tool，主要用于精确查数。我们通过多层安全拦截与柔性审计确保安全，但不代表 SQL 返回结果 100% 业务正确。
+2. **精排模型选择**：消融实验基于本地 BGE-Reranker，受限于单机内存；线上为了低延迟切换为云端 `qwen3-rerank` API，以保障吞吐与延迟。
 3. **评测集性质**：24 题/22 题盲测集用于消融方向验证与指标纠偏，属于小样本，不作为统计学意义上的绝对泛化能力证明。
 4. **缓存降级边界**：语义缓存采用内存 O(n) 余弦相似度匹配，在 <1000 条缓存时性能极佳（约 226ms 内），若大规模上生产将替换为 RediSearch 或专用向量索引。Checkpoint 强依赖 Redis Stack。
 
