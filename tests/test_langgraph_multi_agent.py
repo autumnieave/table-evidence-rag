@@ -7,7 +7,7 @@ import json
 import types
 from typing import Any, Dict, List, Optional
 
-from agents.langgraph_multi_agent import LangGraphMultiAgentPlanner
+from agents.langgraph_multi_agent import LangGraphMultiAgentPlanner, _parse_json_loose_content
 
 
 class FakeMessage:
@@ -412,3 +412,40 @@ def test_execute_exposes_route_type():
     result = _make_planner(client, StubRag(), financial_tool=_fin_tool).execute("万邦德2025Q3营收")
     assert result["route_type"] == "financial"
     assert "财务结果" in result["content"]
+
+
+# ── P0：聚合 JSON 截断/非法时的 content 提取 ─────────────────────────────
+
+
+def test_parse_json_loose_valid_object():
+    out = _parse_json_loose_content('{"content": "正常答案", "image": [], "references": [{"x": 1}]}')
+    assert out["content"] == "正常答案"
+    assert out["references"] == [{"x": 1}]
+
+
+def test_parse_json_loose_truncated_extracts_content():
+    raw = '{"content": "第一段\\n第二段", "image": [], "references": [{"paper_path": "a.md"'
+    out = _parse_json_loose_content(raw)
+    assert out["content"] == "第一段\n第二段"
+    assert not out["content"].lstrip().startswith("{")
+
+
+def test_parse_json_loose_invalid_json_extracts_content():
+    raw = '{"content": "答案里包含 \\"引号\\" 与 \\u4e2d", "image": [}'
+    out = _parse_json_loose_content(raw)
+    assert out["content"] == '答案里包含 "引号" 与 中'
+
+
+def test_parse_json_loose_json_without_content_returns_structured_error():
+    out = _parse_json_loose_content('{"foo": "bar", "image": [}')
+    assert out["content"] == "抱歉，未能生成结构化答案，请补充条件或稍后重试。"
+    assert out["parse_error"] is True
+
+
+def test_parse_json_loose_plain_text_unchanged():
+    assert _parse_json_loose_content("这是普通文本答案")["content"] == "这是普通文本答案"
+
+
+def test_parse_json_loose_markdown_fence():
+    out = _parse_json_loose_content('```json\n{"content": "围栏答案"}\n```')
+    assert out["content"] == "围栏答案"

@@ -109,6 +109,15 @@ class RAGConfig:
     """每个 user_id 每分钟允许的请求数（默认 20）"""
     API_AUTH_EXEMPT_PATHS: str = field(default_factory=lambda: _env("API_AUTH_EXEMPT_PATHS", "/health,/docs,/redoc,/openapi.json"))
     """免鉴权路径，逗号分隔"""
+    SSE_RESUME_ENABLED: bool = field(default_factory=lambda: _env("SSE_RESUME_ENABLED", "true").lower() == "true")
+    """SSE 断点续传开关：开启后为每条事件写自增 id，并支持 Last-Event-ID 回放"""
+    SSE_RESUME_BACKEND: str = field(default_factory=lambda: _env("SSE_RESUME_BACKEND", "redis").strip().lower())
+    """SSE 续传存储后端：redis=Redis hash+list（不可用时自动降级 memory）/ memory=进程内"""
+    SSE_RESUME_REDIS_URL: str = field(default_factory=lambda: _env("SSE_RESUME_REDIS_URL", "redis://localhost:6379/3"))
+    """SSE 续传 Redis 连接串（独立 DB，普通 Redis 即可）"""
+    SSE_RESUME_TTL_SECONDS: int = field(default_factory=lambda: int(_env("SSE_RESUME_TTL_SECONDS", "1800")))
+    """SSE 续传记录 TTL（秒），默认 30 分钟"""
+    """免鉴权路径，逗号分隔"""
     AGENT_PLANNER_BACKEND: str = field(default_factory=lambda: _env("AGENT_PLANNER_BACKEND", "handwritten"))
     """Agent 编排后端：handwritten=自研循环（默认）/ langgraph=StateGraph 版（实验）"""
     AGENT_ENABLE_THINKING: bool = field(default_factory=lambda: _env("AGENT_ENABLE_THINKING", "false").lower() == "true")

@@ -19,6 +19,12 @@ from fastapi.staticfiles import StaticFiles
 from app.schemas import ChatRequest, ChatResponse, ClarifyRequest
 from utils.api_security import create_rate_limiter, extract_api_key, parse_api_keys
 from utils.query_cache import make_cache_key
+from utils.sse_stream import (
+    SSEResumeStore,
+    format_sse,
+    parse_last_event_id,
+    question_fingerprint,
+)
 from utils.observability import RequestTrace, finalize_and_log, reset_trace, set_trace
 from core.pipeline import get_config, get_pipeline
 
@@ -344,7 +350,7 @@ def _normalize_images(images: List[str]) -> List[str]:
     return normalized
 
 
-@app.post("/chat")
+@app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, http_request: Request, response: Response):
     trace = getattr(http_request.state, "trace", None)
     if trace is not None:
@@ -363,6 +369,8 @@ async def chat(request: ChatRequest, http_request: Request, response: Response):
         if hit is not None:
             if trace is not None:
                 trace.cache_hit = True
+            if isinstance(hit, str):
+                hit = {"content": hit, "image": [], "references": []}
             if isinstance(hit, dict) and hit.get("image"):
                 hit["image"] = _normalize_images(hit["image"])
             response.headers["X-Cache-Status"] = "exact_hit"
@@ -406,169 +414,459 @@ async def chat(request: ChatRequest, http_request: Request, response: Response):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/chat/stream")
-async def chat_stream(request: ChatRequest, http_request: Request):
-    """
-    流式接口：SSE 推送事件（stage / content / meta / done / error）。
-    - rag：真实逐 token（检索/精排完成后立即输出生成内容）
-    - agent：阶段事件（stage）即时反馈 + 完成后逐字输出，避免长任务等待期无反馈
-    """
+class _LiveStream:
+    """一条正在生成的流；后台任务独立于 HTTP 连接，断线后可继续写事件。"""
 
+    def __init__(self, stream_id: str, user_id: str, question: str, mode: str) -> None:
+        self.stream_id = stream_id
+        self.user_id = user_id
+        self.question = question
+        self.mode = mode
+        self.events: List[Dict[str, Any]] = []
+        self.queue: Optional[asyncio.Queue] = asyncio.Queue()
+        self.done = False
+        self.error: Optional[str] = None
+        self.task: Optional[asyncio.Task] = None
+        self.trace: Any = None
+
+
+class _ReplayStream:
+    """从 Redis/内存回放的流；没有活动任务，只能读取已落盘事件。"""
+
+    def __init__(
+        self,
+        stream_id: str,
+        user_id: str,
+        question: str,
+        mode: str,
+        events: List[Dict[str, Any]],
+        done: bool,
+        error: Optional[str] = None,
+    ) -> None:
+        self.stream_id = stream_id
+        self.user_id = user_id
+        self.question = question
+        self.mode = mode
+        self.events = list(events or [])
+        self.queue = None
+        self.done = bool(done)
+        self.error = error
+        self.task = None
+        self.trace = None
+
+
+_SSE_STORE: Any = None
+_LIVE_STREAMS: Dict[str, _LiveStream] = {}
+
+
+def _get_sse_store() -> SSEResumeStore:
+    """懒加载续传存储；Redis 不可用时自动降级进程内内存。"""
+    global _SSE_STORE
+    backend = str(getattr(config, "SSE_RESUME_BACKEND", "redis") or "memory").strip().lower()
+    redis_url = str(getattr(config, "SSE_RESUME_REDIS_URL", "") or "")
+    ttl_seconds = int(getattr(config, "SSE_RESUME_TTL_SECONDS", 1800) or 1800)
+    signature = (backend, redis_url, ttl_seconds)
+    if _SSE_STORE is not None and getattr(_SSE_STORE, "_signature", None) == signature:
+        return _SSE_STORE
+    if _SSE_STORE is not None:
+        try:
+            _SSE_STORE.reset()
+        except Exception:  # noqa: BLE001
+            pass
+    redis_client = None
+    if backend == "redis" and redis_url:
+        try:
+            import redis  # noqa: PLC0415
+
+            redis_client = redis.Redis.from_url(
+                redis_url,
+                decode_responses=True,
+                socket_connect_timeout=1.0,
+                socket_timeout=1.0,
+            )
+            redis_client.ping()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("sse_resume_redis_unavailable fallback=memory error=%s", exc)
+            redis_client = None
+    _SSE_STORE = SSEResumeStore(
+        redis_client=redis_client,
+        ttl_seconds=ttl_seconds,
+    )
+    _SSE_STORE._signature = signature
+    return _SSE_STORE
+
+
+def reset_sse_resume_store() -> None:
+    """清空续传存储与活动任务（测试/运维用）。"""
+    global _SSE_STORE
+    for session in list(_LIVE_STREAMS.values()):
+        task = getattr(session, "task", None)
+        if task is not None and not task.done():
+            task.cancel()
+    _LIVE_STREAMS.clear()
+    if _SSE_STORE is not None:
+        try:
+            _SSE_STORE.reset()
+        except Exception:  # noqa: BLE001
+            pass
+    _SSE_STORE = None
+
+
+_RETRYABLE_ERROR_MARKERS = (
+    "timeout", "timed out", "超时", "rate limit", "too many requests", "429",
+    "502", "503", "504", "connection reset", "connection aborted",
+    "connection refused", "temporarily unavailable", "网络", "network",
+    "redis", "pool exhausted",
+)
+_NON_RETRYABLE_ERROR_MARKERS = (
+    "invalid", "validation", "bad request", "unauthorized", "forbidden",
+    "not found", "unsupported", "参数", "校验失败", "拒答", "拒绝",
+    "权限", "schema", "400", "401", "403", "404",
+)
+
+
+def _is_retryable_error(value: Any) -> bool:
+    """网络超时/限流可重试；参数错误/业务拒答/权限问题不可重试。"""
+    if isinstance(value, BaseException):
+        text = f"{type(value).__name__}: {value}"
+    else:
+        text = str(value or "")
+    lowered = text.lower()
+    if any(marker in lowered for marker in _NON_RETRYABLE_ERROR_MARKERS):
+        return False
+    return any(marker in lowered for marker in _RETRYABLE_ERROR_MARKERS)
+
+
+def _resolve_route_type(result: Any, mode: str, stages: List[str]) -> str:
+    """优先使用结果里的 route_type；否则按 stage 推断。"""
+    if isinstance(result, dict):
+        value = str(result.get("route_type") or "").strip().lower()
+        if value in ("financial", "research", "mixed"):
+            return value
+    seen = set(stages or [])
+    if "query_financial" in seen and "search_reports" in seen:
+        return "mixed"
+    if "query_financial" in seen:
+        return "financial"
+    return "research"
+
+
+def _meta_event(
+    result: Any,
+    mode: str,
+    stages: List[str],
+    cache_hit: bool,
+    cache_layer: Optional[str],
+    semantic_similarity: Optional[float] = None,
+) -> Dict[str, Any]:
+    """构造 meta 事件；缓存/非缓存路径共用同一字段集。"""
+    if not isinstance(result, dict):
+        result = {"content": str(result or ""), "image": [], "references": []}
+    images = result.get("image") or []
+    if not isinstance(images, list):
+        images = [images]
+    event: Dict[str, Any] = {
+        "type": "meta",
+        "image": _normalize_images(images),
+        "references": result.get("references") or [],
+        "chart_json": result.get("chart_json"),
+        "cache_hit": bool(cache_hit),
+        "cache_layer": cache_layer,
+        "route_type": _resolve_route_type(result, mode, stages),
+    }
+    if semantic_similarity is not None:
+        event["semantic_similarity"] = semantic_similarity
+    return event
+
+
+def _emit_event(session: Any, event: Dict[str, Any], store: SSEResumeStore) -> Optional[Dict[str, Any]]:
+    """写 store + 入队；store 返回 None 时说明流已被新请求替换。"""
+    stored = store.append(session.user_id, session.stream_id, event)
+    if stored is None:
+        return None
+    session.events.append(stored)
+    if session.queue is not None:
+        session.queue.put_nowait(stored)
+    return stored
+
+
+async def _iter_stream(session: Any, after_id: int = 0):
+    """先回放已有事件，再消费活动队列；保证不重复、不丢 done/error。"""
+    sent = max(0, int(after_id or 0))
+    for event in list(session.events):
+        event_id = int(event.get("id") or 0)
+        if event_id <= sent:
+            continue
+        yield format_sse(event)
+        sent = event_id
+        if event.get("type") in ("done", "error"):
+            return
+    if session.queue is None:
+        if not session.done:
+            yield format_sse({
+                "id": sent + 1,
+                "type": "error",
+                "message": "流式生成已中断，请重试",
+                "retryable": True,
+            })
+            yield format_sse({"id": sent + 2, "type": "done"})
+        return
+    while True:
+        event = await session.queue.get()
+        if event is None:
+            break
+        event_id = int(event.get("id") or 0)
+        if event_id <= sent:
+            continue
+        sent = event_id
+        yield format_sse(event)
+        if event.get("type") in ("done", "error"):
+            break
+
+
+def _build_cached_session(
+    store: SSEResumeStore,
+    request: ChatRequest,
+    result: Any,
+    cache_layer: str,
+    semantic_similarity: Optional[float] = None,
+) -> _ReplayStream:
+    """把精确/语义缓存命中回放成一条可续传的流。"""
+    stream_id = store.start(request.user_id, request.question, request.mode)
+    session = _ReplayStream(
+        stream_id, request.user_id, request.question, request.mode, [], True
+    )
+
+    def add(event: Dict[str, Any]) -> None:
+        stored = store.append(request.user_id, stream_id, event)
+        if stored is not None:
+            session.events.append(stored)
+
+    add(_meta_event(result, request.mode, [], True, cache_layer, semantic_similarity))
+    content = str(result.get("content") or "") if isinstance(result, dict) else str(result or "")
+    for i in range(0, len(content), 4):
+        add({"type": "content", "text": content[i:i + 4]})
+    add({"type": "done"})
+    store.mark_done(request.user_id, stream_id)
+    return session
+
+
+def _find_resumable(
+    store: SSEResumeStore,
+    request: ChatRequest,
+    last_event_id: Optional[int],
+) -> Optional[Any]:
+    """按 user_id + question 指纹匹配断点；不匹配视为新请求。"""
+    if last_event_id is None:
+        return None
+    meta = store.get_meta(request.user_id)
+    if not meta:
+        return None
+    if meta.get("mode") != request.mode:
+        return None
+    if meta.get("fingerprint") != question_fingerprint(request.question, request.mode):
+        return None
+    if last_event_id > int(meta.get("last_id") or 0):
+        return None
+    stream_id = str(meta.get("stream_id") or "")
+    if not stream_id:
+        return None
+    live = _LIVE_STREAMS.get(stream_id)
+    if live is not None:
+        return live
+    events = store.load_events(request.user_id, last_event_id)
+    return _ReplayStream(
+        stream_id,
+        request.user_id,
+        request.question,
+        request.mode,
+        events,
+        bool(meta.get("done")),
+        meta.get("error"),
+    )
+
+
+async def _run_generation(
+    session: _LiveStream,
+    store: SSEResumeStore,
+    cache: Any,
+    cache_key: Optional[str],
+    semantic: Any,
+    semantic_ns: str,
+) -> None:
+    """后台生成：独立于 HTTP 连接，事件实时写 store，断线后可续传。"""
+    loop = asyncio.get_running_loop()
+    stages: List[str] = []
+
+    def emit(event: Dict[str, Any]) -> None:
+        _emit_event(session, event, store)
+
+    def on_stage(stage: str) -> None:
+        stages.append(str(stage))
+        loop.call_soon_threadsafe(emit, {"type": "stage", "stage": str(stage)})
+
+    def on_chunk(text: str) -> None:
+        loop.call_soon_threadsafe(emit, {"type": "content", "text": str(text)})
+
+    def run_sync() -> Any:
+        streamed_parts: List[str] = []
+        if session.mode == "agent":
+            def agent_on_chunk(text: str) -> None:
+                streamed_parts.append(str(text))
+                on_chunk(str(text))
+
+            result = pipeline.agent_query(
+                session.question,
+                user_id=session.user_id,
+                on_stage=on_stage,
+                on_chunk=agent_on_chunk,
+            )
+        else:
+            def rag_on_chunk(text: str) -> None:
+                streamed_parts.append(str(text))
+                on_chunk(str(text))
+
+            result = pipeline.query(
+                session.question, verbose=False, stream_callback=rag_on_chunk
+            )
+        return result, "".join(streamed_parts)
+
+    try:
+        result, streamed_text = await asyncio.to_thread(run_sync)
+        # 让 worker 线程通过 call_soon_threadsafe 排入的 stage/content 先落库，
+        # 再发 meta/done；否则可能出现 done 先到、后续 content 被丢弃的竞态。
+        await asyncio.sleep(0)
+        if isinstance(result, str):
+            result = {"content": result, "image": [], "references": []}
+        if not isinstance(result, dict):
+            result = {"content": str(result or ""), "image": [], "references": []}
+        if result.get("image"):
+            result["image"] = _normalize_images(result["image"])
+        if cache is not None and cache_key is not None:
+            try:
+                cache.set(cache_key, result)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sse_exact_cache_set_failed error=%s", exc)
+        if semantic is not None:
+            try:
+                await asyncio.to_thread(semantic.set, session.question, result, semantic_ns)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sse_semantic_cache_set_failed error=%s", exc)
+
+        content = str(result.get("content") or "")
+        emit(_meta_event(result, session.mode, stages, False, None))
+        if streamed_text and content.strip() == streamed_text.strip():
+            emit({"type": "done"})
+        else:
+            if streamed_text:
+                emit({"type": "final"})
+            for i in range(0, len(content), 4):
+                emit({"type": "content", "text": content[i:i + 4]})
+                await asyncio.sleep(0.008)
+            emit({"type": "done"})
+        store.mark_done(session.user_id, session.stream_id)
+        if session.trace is not None:
+            session.trace.status = "ok"
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("sse_generation_failed stream_id=%s", session.stream_id)
+        emit({
+            "type": "error",
+            "message": str(exc),
+            "retryable": _is_retryable_error(exc),
+        })
+        session.error = str(exc)
+        store.mark_done(session.user_id, session.stream_id, error=str(exc))
+        if session.trace is not None:
+            session.trace.status = "error"
+            session.trace.error = str(exc)
+    finally:
+        session.done = True
+        if session.queue is not None:
+            session.queue.put_nowait(None)
+        _LIVE_STREAMS.pop(session.stream_id, None)
+
+
+@app.post(
+    "/chat/stream",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "Server-Sent Events",
+            "content": {"text/event-stream": {"schema": {"type": "string"}}},
+        }
+    },
+)
+async def chat_stream(request: ChatRequest, http_request: Request):
+    """流式接口：SSE 事件（stage / content / meta / final / done / error）。
+
+    - 每条事件带自增 ``id``；
+    - 支持 ``Last-Event-ID``：同一 user_id + 同一 question 从断点回放；
+    - 后台生成与 HTTP 连接解耦，断线后仍会继续写入续传存储。
+    """
+    trace = getattr(http_request.state, "trace", None)
+    if trace is not None:
+        set_trace(trace)
+        trace.mode = request.mode or "rag"
+        trace.extra["question_chars"] = len(request.question or "")
     await _enforce_user_rate_limit(request.user_id)
 
-    async def generate():
-        trace = getattr(http_request.state, "trace", None)
-        if trace is not None:
-            set_trace(trace)
-            trace.mode = request.mode or "rag"
-            trace.extra["question_chars"] = len(request.question or "")
-        # 路线 1 缓存：命中直接回放结果（content/meta/done），跳过真实检索与生成
+    store = _get_sse_store()
+    last_event_id = parse_last_event_id(http_request.headers.get("Last-Event-ID"))
+    resume_enabled = bool(getattr(config, "SSE_RESUME_ENABLED", True))
+    session = _find_resumable(store, request, last_event_id) if resume_enabled else None
+    resumed = session is not None
+
+    if session is None:
         cache = _get_query_cache()
         cache_key = None
+        cached_result = None
+        cache_layer = None
+        semantic_similarity = None
         if cache is not None:
             cache_key = make_cache_key("chat", request.mode, request.user_id, request.question)
             hit = cache.get(cache_key)
             if hit is not None:
-                if trace is not None:
-                    trace.cache_hit = True
-                content = hit.get("content", "") if isinstance(hit, dict) else str(hit or "")
-                image = hit.get("image", []) if isinstance(hit, dict) else []
-                references = hit.get("references", []) if isinstance(hit, dict) else []
-                chart_json = hit.get("chart_json") if isinstance(hit, dict) else None
-                meta = json.dumps(
-                    {"type": "meta", "image": _normalize_images(image), "references": references,
-                     "chart_json": chart_json, "cache_hit": True, "cache_layer": "exact"},
-                    ensure_ascii=False,
-                )
-                yield f"data: {meta}\n\n"
-                for i in range(0, len(content), 4):
-                    piece = content[i:i + 4]
-                    data = json.dumps({"type": "content", "text": piece}, ensure_ascii=False)
-                    yield f"data: {data}\n\n"
-                    await asyncio.sleep(0.008)
-                yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                return
+                cached_result = hit
+                cache_layer = "exact"
 
-        # 语义缓存：与精确缓存同一回放协议（meta → content → done）
-        semantic = _get_semantic_cache()
-        semantic_ns = f"{(request.mode or 'rag')}:{request.user_id}"
-        if semantic is not None:
-            semantic_hit = await asyncio.to_thread(
-                semantic.get, request.question, semantic_ns
+        semantic = None
+        semantic_ns = f"{request.mode}:{request.user_id}"
+        if cached_result is None:
+            semantic = _get_semantic_cache()
+            if semantic is not None:
+                hit = await asyncio.to_thread(semantic.get, request.question, semantic_ns)
+                if hit is not None:
+                    cached_result = hit
+                    cache_layer = "semantic"
+                    semantic_similarity = getattr(semantic, "last_similarity", None)
+
+        if cached_result is not None:
+            if trace is not None:
+                trace.cache_hit = True
+                trace.extra["cache_layer"] = cache_layer
+                if semantic_similarity is not None:
+                    trace.extra["semantic_similarity"] = semantic_similarity
+            session = _build_cached_session(
+                store, request, cached_result, str(cache_layer), semantic_similarity
             )
-            if semantic_hit is not None:
-                if trace is not None:
-                    trace.cache_hit = True
-                    trace.extra["cache_layer"] = "semantic"
-                    trace.extra["semantic_similarity"] = semantic.last_similarity
-                    trace.extra["semantic_lookup_ms"] = semantic.last_lookup_ms
-                content = semantic_hit.get("content", "") if isinstance(semantic_hit, dict) else str(semantic_hit or "")
-                image = semantic_hit.get("image", []) if isinstance(semantic_hit, dict) else []
-                references = semantic_hit.get("references", []) if isinstance(semantic_hit, dict) else []
-                chart_json = semantic_hit.get("chart_json") if isinstance(semantic_hit, dict) else None
-                meta = json.dumps(
-                    {"type": "meta", "image": _normalize_images(image), "references": references,
-                     "chart_json": chart_json, "cache_hit": True, "cache_layer": "semantic",
-                     "semantic_similarity": getattr(semantic, "last_similarity", None)},
-                    ensure_ascii=False,
-                )
-                yield f"data: {meta}\n\n"
-                for i in range(0, len(content), 4):
-                    piece = content[i:i + 4]
-                    data = json.dumps({"type": "content", "text": piece}, ensure_ascii=False)
-                    yield f"data: {data}\n\n"
-                    await asyncio.sleep(0.008)
-                yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                return
+        else:
+            if trace is not None:
+                trace.cache_hit = False
+            stream_id = store.start(request.user_id, request.question, request.mode)
+            session = _LiveStream(
+                stream_id, request.user_id, request.question, request.mode
+            )
+            session.trace = trace
+            _LIVE_STREAMS[stream_id] = session
+            session.task = asyncio.create_task(
+                _run_generation(session, store, cache, cache_key, semantic, semantic_ns)
+            )
 
-        queue: asyncio.Queue = asyncio.Queue()
-        box: Dict[str, Any] = {}
+    after_id = last_event_id if resumed else 0
 
-        def on_chunk(text: str) -> None:
-            queue.put_nowait(("content", text))
-
-        def on_stage(stage: str) -> None:
-            queue.put_nowait(("stage", stage))
-
-        def run_query() -> None:
-            try:
-                streamed_parts: List[str] = []
-                if request.mode == "agent":
-                    def agent_on_chunk(text: str) -> None:
-                        streamed_parts.append(text)
-                        on_chunk(text)
-
-                    result = pipeline.agent_query(
-                        request.question,
-                        user_id=request.user_id,
-                        on_stage=on_stage,
-                        on_chunk=agent_on_chunk,
-                    )
-                else:
-                    def rag_on_chunk(text: str) -> None:
-                        streamed_parts.append(text)
-                        on_chunk(text)
-
-                    result = pipeline.query(request.question, verbose=False, stream_callback=rag_on_chunk)
-                box["streamed_text"] = "".join(streamed_parts)
-                if cache is not None and cache_key is not None and isinstance(result, dict):
-                    cache.set(cache_key, result)
-                if semantic is not None and isinstance(result, dict):
-                    semantic.set(request.question, result, semantic_ns)
-                box["result"] = result
-                queue.put_nowait(("finish", None))
-            except Exception as e:  # noqa: BLE001
-                import traceback
-                traceback.print_exc()
-                queue.put_nowait(("error", str(e)))
-
-        task = asyncio.create_task(asyncio.to_thread(run_query))
-        try:
-            while True:
-                kind, payload = await queue.get()
-                if kind == "stage":
-                    data = json.dumps({"type": "stage", "stage": payload}, ensure_ascii=False)
-                    yield f"data: {data}\n\n"
-                elif kind == "content":
-                    data = json.dumps({"type": "content", "text": payload}, ensure_ascii=False)
-                    yield f"data: {data}\n\n"
-                elif kind == "finish":
-                    result = box.get("result") or {}
-                    content = result.get("content", "") if isinstance(result, dict) else str(result or "")
-                    image = result.get("image", []) if isinstance(result, dict) else []
-                    references = result.get("references", []) if isinstance(result, dict) else []
-                    chart_json = result.get("chart_json") if isinstance(result, dict) else None
-                    meta = json.dumps(
-                        {"type": "meta", "image": _normalize_images(image), "references": references,
-                         "chart_json": chart_json, "cache_hit": False, "cache_layer": None},
-                        ensure_ascii=False,
-                    )
-                    yield f"data: {meta}\n\n"
-                    streamed_text = box.get("streamed_text") or ""
-                    # 已真流式输出且与最终内容一致（rag 模式 / 单任务直出）：跳过重发，避免内容重复
-                    if streamed_text and content.strip() == streamed_text.strip():
-                        yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                        break
-                    # 流式输出过但最终内容不同（混合题：研报草稿 → 汇总终稿）：先发 final 让前端重置再重发终稿
-                    if streamed_text:
-                        yield f"data: {json.dumps({'type': 'final'})}\n\n"
-                    # agent 全量结果一次性返回：按小块逐字输出，保留打字机效果
-                    for i in range(0, len(content), 4):
-                        piece = content[i:i + 4]
-                        data = json.dumps({"type": "content", "text": piece}, ensure_ascii=False)
-                        yield f"data: {data}\n\n"
-                        await asyncio.sleep(0.008)
-                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                    break
-                elif kind == "error":
-                    if trace is not None:
-                        trace.status = "error"
-                        trace.error = str(payload)
-                    data = json.dumps({"type": "error", "message": payload}, ensure_ascii=False)
-                    yield f"data: {data}\n\n"
-                    break
-        finally:
-            task.cancel()
+    async def generate():
+        async for frame in _iter_stream(session, after_id):
+            yield frame
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 

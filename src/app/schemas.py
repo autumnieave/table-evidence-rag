@@ -1,6 +1,6 @@
 """app/schemas.py —— API 请求/响应模型"""
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -10,7 +10,7 @@ class ChatRequest(BaseModel):
 
     question: str
     user_id: Optional[str] = "default"
-    mode: Optional[str] = "rag"  # "rag" 或 "agent"
+    mode: Literal["rag", "agent"] = "rag"
 
 
 class ChatResponse(BaseModel):
@@ -20,6 +20,7 @@ class ChatResponse(BaseModel):
     image: List[str] = []
     references: List[dict] = []
     chart_json: Optional[Dict] = None
+    route_type: Optional[Literal["financial", "research", "mixed"]] = None
 
 
 class ClarifyRequest(BaseModel):

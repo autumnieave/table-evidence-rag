@@ -30,6 +30,10 @@ class StubConfig:
     QUERY_CACHE_ENABLED = False
     API_RATE_LIMIT_BACKEND = "memory"
     USER_RATE_LIMIT_ENABLED = False
+    SSE_RESUME_ENABLED = True
+    SSE_RESUME_BACKEND = "memory"
+    SSE_RESUME_REDIS_URL = ""
+    SSE_RESUME_TTL_SECONDS = 1800
     QDRANT_COLLECTION_NAME = "test_collection"
     CITATION_CORPUS_ROOT = "__missing_corpus__"
     CITATION_MATCH_MODE = "smart"
@@ -51,6 +55,8 @@ class FakePipeline:
         self.rag_content: str = "RAG 答案"          # 最终 content
         self.agent_stream_text: str = "Agent 答案"
         self.agent_content: str = "Agent 答案"
+        self.agent_route_type: Optional[str] = None
+        self.agent_stages: List[str] = ["thinking"]
 
     def build_bm25_index(self) -> None:
         pass
@@ -74,15 +80,19 @@ class FakePipeline:
             raise self.agent_fail
         self.agent_calls.append({"question": question, "user_id": user_id})
         if on_stage is not None:
-            on_stage("thinking")
+            for stage in self.agent_stages:
+                on_stage(stage)
         if on_chunk is not None:
             on_chunk(self.agent_stream_text)
-        return {
+        result = {
             "content": self.agent_content,
             "image": [],
             "references": [],
             "chart_json": None,
         }
+        if self.agent_route_type:
+            result["route_type"] = self.agent_route_type
+        return result
 
     def conversational_query(self, input: str, user_id: Optional[str] = None):
         if self.clarify_fail is not None:
@@ -144,17 +154,34 @@ def api_env():
 
 
 def _sse_events(body: str) -> List[Dict[str, Any]]:
-    """SSE body -> event dict 列表（过滤注释行/空行）。"""
+    """SSE body -> event dict 列表（忽略 id:/空行）。"""
     events: List[Dict[str, Any]] = []
-    for raw in body.split("data: "):
-        line = raw.strip()
-        if not line:
+    for line in body.splitlines():
+        if not line.startswith("data: "):
             continue
         try:
-            events.append(json.loads(line))
+            events.append(json.loads(line[6:]))
         except ValueError:
             continue
     return events
+
+
+def _sse_frames(body: str) -> List[Dict[str, Any]]:
+    """SSE body -> [{id, data}]；用于断言自增 id 与断点续传。"""
+    frames: List[Dict[str, Any]] = []
+    current: Dict[str, Any] = {}
+    for line in body.splitlines():
+        if line.startswith("id: "):
+            current["id"] = int(line[4:].strip())
+        elif line.startswith("data: "):
+            current["data"] = json.loads(line[6:])
+        elif not line.strip() and current:
+            if "data" in current:
+                frames.append(current)
+            current = {}
+    if current and "data" in current:
+        frames.append(current)
+    return frames
 
 
 # ── /health ───────────────────────────────────────────────────────────
@@ -191,11 +218,16 @@ def test_chat_default_mode_is_rag(api_env) -> None:
     assert stub_pipe.query_calls[-1] == "默认模式问题"
 
 
-def test_chat_null_mode_is_rag(api_env) -> None:
-    client, _, _, stub_pipe = api_env
+def test_chat_null_mode_422(api_env) -> None:
+    client, *_ = api_env
     resp = client.post("/chat", json={"question": "空模式", "mode": None})
-    assert resp.status_code == 200
-    assert stub_pipe.query_calls[-1] == "空模式"
+    assert resp.status_code == 422
+
+
+def test_chat_invalid_mode_422(api_env) -> None:
+    client, *_ = api_env
+    resp = client.post("/chat", json={"question": "非法模式", "mode": "Agent"})
+    assert resp.status_code == 422
 
 
 def test_chat_string_result_wrapped(api_env) -> None:
@@ -369,6 +401,151 @@ def test_stream_semantic_cache_miss_then_set(api_env, monkeypatch) -> None:
     assert fake.payload is not None and fake.payload.get("content") == "RAG 答案"
 
 
+@pytest.fixture
+def sse_store(api_env):
+    _, api_module, _, _ = api_env
+    api_module.reset_sse_resume_store()
+    yield api_module
+    api_module.reset_sse_resume_store()
+
+
+def test_stream_events_have_incrementing_ids(api_env, sse_store) -> None:
+    client, _, _, stub_pipe = api_env
+    stub_pipe.rag_stream_text = "草稿"
+    stub_pipe.rag_content = "终稿内容XYZ"
+    resp = client.post("/chat/stream", json={"question": "id递增", "mode": "rag"})
+    frames = _sse_frames(resp.text)
+    assert frames
+    assert [frame["id"] for frame in frames] == list(range(1, len(frames) + 1))
+    assert all("id" not in frame["data"] for frame in frames)
+
+
+def test_stream_meta_route_type_rag(api_env, sse_store) -> None:
+    client, _, _, _ = api_env
+    resp = client.post("/chat/stream", json={"question": "RAG路由", "mode": "rag"})
+    metas = [e for e in _sse_events(resp.text) if e["type"] == "meta"]
+    assert metas and metas[0]["route_type"] == "research"
+
+
+def test_stream_meta_route_type_agent_from_result(api_env, sse_store) -> None:
+    client, _, _, stub_pipe = api_env
+    stub_pipe.agent_route_type = "financial"
+    stub_pipe.agent_stages = ["query_financial"]
+    try:
+        resp = client.post("/chat/stream", json={"question": "财务路由", "mode": "agent"})
+        metas = [e for e in _sse_events(resp.text) if e["type"] == "meta"]
+        assert metas and metas[0]["route_type"] == "financial"
+    finally:
+        stub_pipe.agent_route_type = None
+        stub_pipe.agent_stages = ["thinking"]
+
+
+def test_stream_error_retryable_true_for_timeout(api_env, sse_store) -> None:
+    client, _, _, stub_pipe = api_env
+    stub_pipe.rag_fail = RuntimeError("生成超时")
+    try:
+        resp = client.post("/chat/stream", json={"question": "超时错误", "mode": "rag"})
+        events = _sse_events(resp.text)
+        assert events[-1]["type"] == "error"
+        assert events[-1]["retryable"] is True
+    finally:
+        stub_pipe.rag_fail = None
+
+
+def test_stream_error_retryable_false_for_bad_request(api_env, sse_store) -> None:
+    client, _, _, stub_pipe = api_env
+    stub_pipe.rag_fail = ValueError("invalid parameter: question")
+    try:
+        resp = client.post("/chat/stream", json={"question": "参数错误", "mode": "rag"})
+        events = _sse_events(resp.text)
+        assert events[-1]["type"] == "error"
+        assert events[-1]["retryable"] is False
+    finally:
+        stub_pipe.rag_fail = None
+
+
+def test_stream_resume_replays_after_last_event_id(api_env, sse_store) -> None:
+    client, _, _, stub_pipe = api_env
+    stub_pipe.rag_stream_text = "草稿"
+    stub_pipe.rag_content = "终稿内容XYZ"
+    payload = {"question": "断点题", "mode": "rag", "user_id": "resume-user-1"}
+    first = client.post("/chat/stream", json=payload)
+    first_frames = _sse_frames(first.text)
+    assert [f["data"]["type"] for f in first_frames] == [
+        "content", "meta", "final", "content", "content", "done",
+    ]
+
+    before_calls = len(stub_pipe.query_calls)
+    resumed = client.post(
+        "/chat/stream",
+        json=payload,
+        headers={"Last-Event-ID": "2"},
+    )
+    frames = _sse_frames(resumed.text)
+    assert [f["id"] for f in frames] == [3, 4, 5, 6]
+    assert [f["data"]["type"] for f in frames] == ["final", "content", "content", "done"]
+    assert "".join(f["data"].get("text", "") for f in frames if f["data"]["type"] == "content") == "终稿内容XYZ"
+    assert len(stub_pipe.query_calls) == before_calls
+
+
+def test_stream_resume_new_question_starts_fresh(api_env, sse_store) -> None:
+    client, _, _, stub_pipe = api_env
+    payload = {"question": "断点题A", "mode": "rag", "user_id": "resume-user-2"}
+    first = client.post("/chat/stream", json=payload)
+    assert _sse_frames(first.text)
+
+    before_calls = len(stub_pipe.query_calls)
+    second = client.post(
+        "/chat/stream",
+        json={"question": "断点题B", "mode": "rag", "user_id": "resume-user-2"},
+        headers={"Last-Event-ID": "2"},
+    )
+    frames = _sse_frames(second.text)
+    assert frames[0]["id"] == 1
+    assert len(stub_pipe.query_calls) == before_calls + 1
+
+
+def test_stream_resume_invalid_header_starts_fresh(api_env, sse_store) -> None:
+    client, _, _, stub_pipe = api_env
+    payload = {"question": "非法断点", "mode": "rag", "user_id": "resume-user-3"}
+    client.post("/chat/stream", json=payload)
+
+    before_calls = len(stub_pipe.query_calls)
+    second = client.post(
+        "/chat/stream",
+        json=payload,
+        headers={"Last-Event-ID": "not-a-number"},
+    )
+    frames = _sse_frames(second.text)
+    assert frames[0]["id"] == 1
+    assert len(stub_pipe.query_calls) == before_calls + 1
+
+
+def test_stream_resume_id_beyond_record_starts_fresh(api_env, sse_store) -> None:
+    client, _, _, stub_pipe = api_env
+    payload = {"question": "越界断点", "mode": "rag", "user_id": "resume-user-4"}
+    client.post("/chat/stream", json=payload)
+
+    before_calls = len(stub_pipe.query_calls)
+    second = client.post(
+        "/chat/stream",
+        json=payload,
+        headers={"Last-Event-ID": "999"},
+    )
+    frames = _sse_frames(second.text)
+    assert frames[0]["id"] == 1
+    assert len(stub_pipe.query_calls) == before_calls + 1
+
+
+def test_openapi_chat_and_stream_contract(api_env) -> None:
+    client, *_ = api_env
+    schema = client.get("/openapi.json").json()
+    chat_200 = schema["paths"]["/chat"]["post"]["responses"]["200"]
+    assert chat_200["content"]["application/json"]["schema"]["$ref"].endswith("/ChatResponse")
+    stream_200 = schema["paths"]["/chat/stream"]["post"]["responses"]["200"]
+    assert "text/event-stream" in stream_200["content"]
+
+
 # ── /chat/clarify ─────────────────────────────────────────────────────
 def test_clarify_ok_returns_done_false(api_env) -> None:
     client, _, _, stub_pipe = api_env
@@ -403,7 +580,8 @@ def test_chat_response_shape_fields(api_env) -> None:
     resp = client.post("/chat", json={"question": "形状校验", "mode": "agent"})
     assert resp.status_code == 200
     body = resp.json()
-    assert set(body) == {"content", "image", "references", "chart_json"}
+    assert set(body) == {"content", "image", "references", "chart_json", "route_type"}
+    assert body["route_type"] is None
     assert isinstance(body["image"], list) and isinstance(body["references"], list)
 
 

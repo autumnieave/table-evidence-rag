@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict
@@ -36,6 +37,106 @@ from utils.output_contracts import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+#: 宽松提取 JSON 中的 content 字段（聚合 LLM 可能因 max_tokens 截断 JSON）
+_JSON_CONTENT_KEY_RE = re.compile(r'"content"\s*:\s*"')
+_JSON_ESCAPE_RE = re.compile(r'\\(u[0-9a-fA-F]{4}|["\\/bfnrt])')
+_JSON_SIMPLE_ESCAPES = {
+    '"': '"', '\\': '\\', '/': '/', 'b': '\b', 'f': '\f',
+    'n': '\n', 'r': '\r', 't': '\t',
+}
+
+
+def _decode_json_string_fragment(raw: str) -> str:
+    """解码 JSON 字符串片段（支持 \\n / \\" / \\uXXXX），容忍截断。"""
+    def _replace(match: re.Match) -> str:
+        token = match.group(1)
+        if token.startswith("u"):
+            try:
+                return chr(int(token[1:], 16))
+            except ValueError:
+                return token
+        return _JSON_SIMPLE_ESCAPES.get(token, token)
+
+    return _JSON_ESCAPE_RE.sub(_replace, raw)
+
+
+def _extract_json_content_field(text: str) -> Optional[str]:
+    """从截断/非法 JSON 中提取顶层 content 字符串；找不到返回 None。"""
+    match = _JSON_CONTENT_KEY_RE.search(text)
+    if match is None:
+        return None
+    index = match.end()
+    chars = []
+    while index < len(text):
+        char = text[index]
+        if char == "\\":
+            if index + 1 < len(text):
+                chars.append(text[index:index + 2])
+                index += 2
+                continue
+            chars.append(char)
+            break
+        if char == '"':
+            break
+        chars.append(char)
+        index += 1
+    return _decode_json_string_fragment("".join(chars))
+
+
+def _slice_json_object(text: str) -> str:
+    """截取最外层 {...}；没有闭合括号时返回空串。"""
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        return text[start:end + 1]
+    return ""
+
+
+def _parse_json_loose_content(content: str) -> Dict[str, Any]:
+    """解析聚合结果：优先完整 JSON，其次提取 content，最后结构化错误。"""
+    text = (content or "").strip()
+    if not text:
+        return {"content": "", "image": [], "references": []}
+
+    # 去掉 markdown fence（```json ... ```）
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    for candidate in (text, _slice_json_object(text)):
+        if not candidate:
+            continue
+        try:
+            obj = json.loads(candidate)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(obj, dict):
+            value = obj.get("content")
+            if isinstance(value, str):
+                return obj
+            if value is not None:
+                obj["content"] = str(value)
+                return obj
+
+    extracted = _extract_json_content_field(text)
+    if extracted is not None:
+        return {"content": extracted, "image": [], "references": []}
+
+    # JSON 形态但无法恢复：返回结构化错误，绝不透传原始 JSON。
+    if text.lstrip().startswith(("{", "[")):
+        return {
+            "content": "抱歉，未能生成结构化答案，请补充条件或稍后重试。",
+            "image": [],
+            "references": [],
+            "parse_error": True,
+        }
+    return {"content": text, "image": [], "references": []}
 
 #: B-26 财务查询意图关键词（supervisor 空任务兜底路由用；粗粒度宁多勿漏——查无数据由财务侧标准拒答兜底）
 _FINANCIAL_INTENT_MARKERS: tuple = (
@@ -650,15 +751,15 @@ class LangGraphMultiAgentPlanner:
         _contract_stats().record("supervisor_tasks", False, ["supervisor 输出结构非法（B-17）"])
         return [], content
 
-    def _parse_json_loose(self, content: str) -> Dict[str, Any]:
-        """解析最终答案 JSON；非法 JSON 时兜底为文本回答。"""
-        try:
-            obj = json.loads(content)
-            if isinstance(obj, dict):
-                return obj
-        except (TypeError, ValueError):
-            pass
-        return {"content": content, "image": [], "references": []}
+    @staticmethod
+    def _parse_json_loose(content: str) -> Dict[str, Any]:
+        """解析最终答案 JSON；截断/非法 JSON 时提取 content 字段。
+
+        绝不再把原始 JSON 文本整体塞进 ``content``——否则流式接口会把
+        ``{"content": ...}`` 原样吐给前端（P0 脏数据）。无法恢复时返回
+        结构化错误文案。
+        """
+        return _parse_json_loose_content(content)
 
     def _build_context(self, state: MultiAgentState) -> str:
         """把子 Agent 结果拼成汇总 prompt 的输入。"""

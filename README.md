@@ -7,16 +7,16 @@
 
 本项目以结构保留解析、行级事实、混合检索、Agent 证据选择与 Claim 级评测构成闭环。不仅跑通了算法链路，还完成了服务化交付与高并发降本观测。
 
-**技术栈**：Python · FastAPI (SSE) · LangGraph · Qdrant · Redis · Semantic Cache · Cross-Encoder · pytest (1050 单测)
+**技术栈**：Python · FastAPI (SSE) · LangGraph · Qdrant · Redis · Semantic Cache · Cross-Encoder · pytest (1085 单测)
 
-[![CI](https://github.com/autumnieave/table-evidence-rag/actions/workflows/ci.yml/badge.svg)](https://github.com/autumnieave/table-evidence-rag/actions/workflows/ci.yml) [![tests](https://img.shields.io/badge/1050%20tests-passing-brightgreen)]() [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![CI](https://github.com/autumnieave/table-evidence-rag/actions/workflows/ci.yml/badge.svg)](https://github.com/autumnieave/table-evidence-rag/actions/workflows/ci.yml) [![tests](https://img.shields.io/badge/1085%20tests-passing-brightgreen)]() [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 ## 核心指标与工程收益
 
 - **解析与表征**：受控 Gold Set TEDS 1.0（解决跨页/合并单元格），碎片 Chunk 减少 99.4%，建立 Cell-Level Anchors 支撑数字级溯源。
 - **检索与重排**：针对跨期/跨公司噪声，引入 Schema-Aware 前置硬过滤与 Cross-Encoder 两阶段精排，表级 Hit@10 从 25% 提升至 87.5%，MRR@10 从 0.1292 提升至 0.7326。
 - **降本与高并发**：引入 Semantic Cache 拦截重复 Query，免去昂贵的 LLM 生成 Token，端到端 P50 从 22.3s 降至 0.26s（提速 85.9 倍）；基于 Redis+Lua 实现分布式滑动窗口限流。
-- **工程闭环**：基于 Docker Compose 一键编排交付；打通 SSE 流式输出（首字延迟从 38.3s 降至 0.674s）；配套 1050 条离线单测，CI 自动执行。
+- **工程闭环**：基于 Docker Compose 一键编排交付；打通 SSE 流式输出（首字延迟从 38.3s 降至 0.674s）；配套 1085 条离线单测，CI 自动执行。
 
 ## 架构图
 
@@ -74,7 +74,7 @@ flowchart LR
 
 ```bash
 pip install -r requirements.txt
-python -m pytest tests/ -q    # 1050 个离线单测，无需 API Key / 数据库
+python -m pytest tests/ -q    # 1085 个离线单测，无需 API Key / 数据库
 ```
 
 ### 完整服务运行
@@ -97,11 +97,10 @@ MYSQL_HOST=127.0.0.1            # 可选：仅 Agent 的 SQL Tool 使用
 
 #### 3. 一键编排启动（推荐）
 
-项目提供了 `docker-compose.yml`，可一键启动 Qdrant + Redis + FastAPI 后端 + Nginx 前端：
+项目提供了 `docker-compose.yml`，可一键启动 Qdrant + Redis + FastAPI 后端：
 
 ```bash
 docker compose up -d --build
-# 访问前端：http://localhost:8080
 # 访问 API 文档：http://localhost:18000/docs
 ```
 
@@ -110,7 +109,7 @@ docker compose up -d --build
 ## 测试与评估
 
 ```bash
-# 运行全部单测 (1050 passed)
+# 运行全部单测 (1085 passed)
 python -m pytest tests/ -q
 
 # 运行评测闭环 (需本地 golden 数据支持)
@@ -118,36 +117,117 @@ python -m eval citation           # RAG-L1 引用核验
 python -m eval challenge --run    # RAG-L3 对抗挑战集
 ```
 
-## 前端联调验证（qa-frontend）
+## API 契约与 SSE 流式返回
 
-前端为 Vite + React，生产构建经 Nginx 同源反代到后端（`/chat/stream` 已关闭 `proxy_buffering`，SSE 不会被缓冲）。
+后端对外只暴露两个问答入口：`POST /chat`（非流式）与 `POST /chat/stream`（SSE）。两者共用同一份请求模型，错误语义、意图路由与降级行为保持一致。
 
-```bash
-docker compose up -d --build
-# 前端：http://localhost:8080
-# API 文档：http://localhost:18000/docs
+### 1. 请求模型
 
-# 自动化契约检查（SSE / 语义缓存 / 429）
-.\.venv\Scripts\python.exe eval/frontend_contract_check.py --base-url http://localhost:8080
+`ChatRequest`（Pydantic，`mode` 为严格枚举）：
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `question` | `string` | 是 | - | 用户问题原文 |
+| `user_id` | `string` | 否 | `"default"` | 会话、限流、SSE 断点续传的隔离键 |
+| `mode` | `Literal["rag", "agent"]` | 否 | `"rag"` | `rag`=研报 RAG；`agent`=LangGraph 多工具编排。其他值或 `null` 返回 422 |
+
+`POST /chat` 的响应由 `ChatResponse` 约束：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `content` | `string` | 最终答案（SQL 不可用时为结构化拒答话术） |
+| `image` | `string[]` | 图表/图片地址 |
+| `references` | `object[]` | 引用条目，含 `chunk_type`、`markdown`、`chunk_index`、`citation` 等 |
+| `chart_json` | `object?` | ECharts 配置（仅财务查询可能返回） |
+| `route_type` | `"financial" \| "research" \| "mixed"?` | 意图路由结果 |
+
+### 2. SSE 事件类型与时序
+
+每个 SSE 帧的格式固定为：
+
+```text
+id: <自增整数>
+data: {"type": "...", ...}
+
 ```
 
-手工验证三条链路：
+`id` 只出现在 SSE 的 `id:` 行，不重复写入 JSON 载荷；客户端据此实现断点续传。
 
-1. **普通 RAG 流式**：提问「片仔癀2024年营业收入是多少？」，答案逐字输出；Network 中 `/chat/stream` 依次出现 `meta` → `stage` → `content` → `done`。
-2. **Semantic Cache**：紧接着提问同义改写「片仔癀2024年营收有多少」，消息顶部出现「⚡ 语义缓存命中」标签，响应由 20s+ 降至 1s 内。
-3. **限流**：同一 `user_id` 超过 `USER_RATE_LIMIT_PER_MINUTE` 后返回 429，前端显示「⏳ 请求过于频繁，请 N 秒后重试」，不白屏。
+| 事件 | 载荷字段 | 含义 |
+| --- | --- | --- |
+| `stage` | `stage` | Agent 阶段进度（如 `query_financial`、`search_reports`、`generate`） |
+| `content` | `text` | 增量文本片段；客户端按到达顺序拼接 |
+| `meta` | `references`、`image`、`chart_json`、`cache_hit`、`cache_layer`、`route_type`、`semantic_similarity?` | 引用、缓存与路由元信息 |
+| `final` | 无 | Agent 草稿流结束，随后会推送最终答案的 `content` |
+| `done` | 无 | 本次流正常结束 |
+| `error` | `message`、`retryable` | 生成失败；`retryable=true` 表示可重试（超时/限流/网络），`false` 表示参数或业务错误 |
 
-实测（2026-11-05，本机 Docker Compose，Nginx 同源入口）：
+时序（按实际实现）：
 
-| 检查项 | 结果 |
-| --- | --- |
-| `GET /health` | 200 |
-| SSE 事件 | `meta` / `stage` / `content` / `done` |
-| 首次提问 | 22.43s，`cache_hit=false` |
-| 同义改写 | **0.94s**，`cache_hit=true`、`cache_layer=semantic`、similarity 0.934 |
-| 超限请求 | 429，`Retry-After: 60` |
+- **RAG 未命中缓存**：`content...` → `meta` → `done`
+- **精确/语义缓存命中**：`meta` → `content...` → `done`
+- **Agent 多工具**：`stage...` → `content...`（子 Agent 草稿）→ `stage(generate)` → `meta` → `final` → `content...`（终稿）→ `done`
+- **失败**：`...` → `error(retryable=...)`，流随后关闭
 
-> 前端 `user_id` 按会话生成（`session-<id>`），刷新后从 localStorage 恢复；旧会话缺少 `userId` 时自动补齐，避免多会话共用同一份后端记忆。
+### 3. 真实报文示例
+
+`meta` 事件（表格引用保留结构化 Markdown 与块位置）：
+
+```text
+id: 42
+data: {"type":"meta","image":[],"references":[{"paper_path":"data_corpus/全部数据/正式数据/附件5：研报数据/个股研报/片仔癀/片仔癀2023年年度报告.md","text":"肝病用药毛利率 67.9%，上年同期 81.8%","chunk_type":"table","markdown":"| 项目 | 2023 | 2022 |\n|---|---|---|\n| 营业收入(亿元) | 100.4 | 88.2 |\n| 肝病用药毛利率 | 67.9% | 81.8% |","markdown_truncated":false,"chunk_index":17,"chunk_total":834,"text_total":74,"text_truncated":false,"citation":{"status":"fuzzy","located":"data_corpus/.../片仔癀2023年年度报告.md","nums":10,"num_hit":10,"num_ratio":1.0,"unhit":[]}}],"chart_json":null,"cache_hit":false,"cache_layer":null,"route_type":"research"}
+
+```
+
+`content` / `done` 事件：
+
+```text
+id: 43
+data: {"type":"content","text":"片仔癀2023年肝病用药毛利率为"}
+
+id: 44
+data: {"type":"done"}
+
+```
+
+`error` 事件：
+
+```text
+id: 45
+data: {"type":"error","message":"upstream timeout after 30s","retryable":true}
+
+```
+
+### 4. 错误处理与降级机制
+
+| 场景 | 系统行为 | 客户端可见 |
+| --- | --- | --- |
+| MySQL schema/连接加载失败 | `native_financial` 捕获后返回 `build_refuse_system_unavailable` 结构化拒答，不抛 500 | HTTP 200，`route_type="financial"`，`content` 为可读拒答话术 |
+| MySQL 建连超时 | 单次连接 `connect_timeout=5s`，失败即降级为结构化拒答 | HTTP 200 + 拒答话术 |
+| SQL 执行过长 | 会话级 `MAX_EXECUTION_TIME=15000ms`，校验器返回错误并由财务 Agent 转为拒答 | HTTP 200 + 拒答话术 |
+| 多 Agent 单个子任务异常 | 并行子任务各自捕获异常，其余子任务继续；全部为空时返回“抱歉，未能完成查询。” | HTTP 200 + 兜底文案 |
+| Agent 汇总 JSON 非法 | 契约闸门拒绝透传原始 JSON，替换为可读兜底并记录格式事件 | HTTP 200 + 兜底文案 |
+| 网络超时 / 上游 429 / 5xx | SSE 推送 `error`，`retryable=true` | 可安全重试 |
+| 参数缺失 / `mode` 非枚举 / 业务拒答 | HTTP 422 或 `error` 帧，`retryable=false` | 不可重试，需修正请求 |
+| 用户级限流（默认 20 req/min） | 返回 429，并带 `Retry-After` 秒数 | 按 `Retry-After` 退避 |
+
+### 5. SSE 断点续传
+
+- 每条事件由服务端分配自增 `id`；同一 `user_id` 只保留最新一条流。
+- 重连时携带请求头 `Last-Event-ID: <id>`，服务端按 `user_id + question + mode` 指纹匹配。
+- 指纹匹配且 `id` 未越界：从 `id + 1` 继续推送。生成与 HTTP 连接解耦，断线期间事件仍会写入存储。
+- 指纹不匹配、无记录或 `id` 越界：视为新请求，从头生成（旧流记录被覆盖）。
+- 存储优先 Redis（`sse:resume:{user_id}:meta` + `sse:resume:events:{stream_id}`），TTL 默认 1800 秒；Redis 不可用时自动降级进程内内存，接口行为不变。
+- 进程重启后若只剩历史事件，服务端会先回放已缓存事件，再发送 `retryable=true` 的中断错误，避免客户端静默卡死。
+
+相关环境变量：
+
+```bash
+SSE_RESUME_ENABLED=true
+SSE_RESUME_BACKEND=redis          # redis | memory
+SSE_RESUME_REDIS_URL=redis://localhost:6379/3
+SSE_RESUME_TTL_SECONDS=1800
+```
 
 ## 边界与 Trade-off 声明
 
