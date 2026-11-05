@@ -105,16 +105,22 @@ const SUGGESTIONS = {
   ],
 };
 
-// 引用来源核验标记：只暴露用户能理解的一件事——来源文件是否已核验存在。
-// exact（路径精确命中）与 fuzzy（按文件名/目录尾段匹配）都属已核验，不再挂牌自证；
-// 也不暴露 exact/fuzzy 这类实现术语，避免每条引用都挂告警色造成误导。
-const CitationBadge = ({ citation }) => {
+// 引用来源核验标记：三态——来源缺失（红）/ 有数字或断言未命中（黄，需人工复核）/
+// 全部命中且文件可溯源（绿）。不暴露 exact/fuzzy 这类实现术语。
+const CitationBadge = ({ citation, claims }) => {
   if (!citation) return null;
-  const map = {
-    fuzzy: ['bg-gray-100 text-gray-500', '来源已核对', '文件名与语料库中的研报一致'],
-    missing: ['bg-red-100 text-red-700', '来源未核验', '引用文件在语料库中不存在'],
-  };
-  const entry = map[citation.status];
+  // 只要有数字或 Claim 未在引用原文命中，就不能再亮绿灯（原实现只看 status）。
+  const claimMissing = Array.isArray(claims)
+    && claims.some(c => Array.isArray(c.missing_numbers) && c.missing_numbers.length > 0);
+  const partial = (citation.nums > 0 && citation.num_hit < citation.nums) || claimMissing;
+  let entry = null;
+  if (citation.status === 'missing') {
+    entry = ['bg-red-100 text-red-700', '来源未核验', '引用文件在语料库中不存在'];
+  } else if (partial) {
+    entry = ['bg-amber-100 text-amber-700', '部分核对/需人工复核', '部分数字或断言未在引用原文中命中'];
+  } else if (citation.status === 'exact' || citation.status === 'fuzzy') {
+    entry = ['bg-green-100 text-green-700', '来源已核对', '文件名与语料库中的研报一致'];
+  }
   if (!entry) return null;
   const [cls, label, tip] = entry;
   return (
@@ -504,16 +510,26 @@ function App() {
                 <span className="text-gray-700 text-xs font-medium truncate" title={DEMO_MASK ? '' : (citation?.located || ref.paper_path || '')}>
                   {idx + 1}. {mask(basename(ref.paper_path) || '未知来源', MASK_REF_NAME)}
                 </span>
-                <CitationBadge citation={citation} />
+                <CitationBadge citation={citation} claims={ref.claims} />
               </div>
-              {ref.paper_image && (
+              {ref.paper_image && ref.chunk_type !== 'table' && (
                 <div className="text-[11px] text-gray-400 truncate mt-1">📊 {mask(basename(ref.paper_image), MASK_REF_IMAGE)}</div>
+              )}
+              {ref.chunk_type === 'table' && ref.markdown && (
+                <div className="mt-1.5 rounded border border-gray-200 bg-white/80 overflow-auto max-h-64 p-1.5">
+                  <div className="text-[10px] text-gray-400 mb-1">
+                    表格结构化内容{ref.markdown_truncated ? '（已截断）' : ''}
+                  </div>
+                  <div className="prose prose-xs max-w-none text-[11px] [&_table]:text-[11px] [&_th]:px-1.5 [&_td]:px-1.5 [&_th]:py-0.5 [&_td]:py-0.5">
+                    <Markdown remarkPlugins={[remarkGfm]}>{mask(ref.markdown, MASK_REF_TEXT)}</Markdown>
+                  </div>
+                </div>
               )}
               {citation && citation.nums > 0 && (
                 citation.num_hit === citation.nums ? (
                   <div className="text-[11px] text-gray-400 mt-1">✓ {citation.nums} 个数字已与研报原文核对</div>
                 ) : (
-                  <details className="mt-1" open>
+                  <details className="mt-1" open={citation.num_hit / citation.nums > 0.5}>
                     <summary className="text-[11px] text-orange-600 cursor-pointer select-none">
                       数字核验明细（{unhit.length} 个未命中）
                     </summary>
@@ -562,7 +578,7 @@ function App() {
                   </div>
                 </details>
               )}
-              {ref.text && (
+              {ref.chunk_type !== 'table' && ref.text && (
                 <details className="mt-1">
                   <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 select-none">
                     {`原文片段（${ref.chunk_total ? `第 ${ref.chunk_index + 1}/${ref.chunk_total} 块 · ` : ''}${ref.text_truncated ? `前 ${ref.text.length} 字 / 共 ${ref.text_total} 字` : `共 ${ref.text_total || ref.text.length} 字`}）`}
@@ -571,7 +587,7 @@ function App() {
                 </details>
               )}
 
-              {ref.full_text && (
+              {ref.chunk_type !== 'table' && ref.full_text && (
                 <details className="mt-1">
                   <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 select-none">
                     {`引用原文全文（共 ${ref.full_text.length} 字）`}

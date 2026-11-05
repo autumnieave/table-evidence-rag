@@ -118,6 +118,92 @@ def _table_html_to_text(html: str) -> str:
     return html
 
 
+def _resolve_chunk_type(payload: Dict[str, Any]) -> str:
+    """把 payload 中的分块类型归一为 ``text`` / ``table``。
+
+    结构化索引写 ``chunk_type``（prose / table / row_fact / boilerplate）；
+    旧索引只有 ``is_table_row`` / ``parent_id``，按行级锚点回退判定为表格，
+    避免为了补字段而重建索引。
+    """
+    raw = str(payload.get("chunk_type") or "").strip().lower()
+    if raw in ("table", "row_fact"):
+        return "table"
+    if raw in ("prose", "text", "boilerplate"):
+        return "text"
+    if payload.get("is_table_row") or payload.get("parent_id"):
+        return "table"
+    return "text"
+
+
+def _table_text_to_markdown(text: str, max_rows: int = 40) -> tuple[str, bool]:
+    """把表格块内容还原为 Markdown 表格，供前端直接渲染。
+
+    支持三种存量格式：HTML ``<tr><td>``、``a | b`` 行、行级事实
+    ``表头: 值; 表头2: 值2``。只做结构还原，不新增或推算任何数值。
+    """
+    if not text:
+        return "", False
+
+    if "<tr" in text.lower():
+        rows = [
+            [c.strip() for c in ln.split("|")]
+            for ln in _table_html_to_text(text).splitlines()
+            if ln.strip()
+        ]
+    else:
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if any("|" in ln for ln in lines):
+            rows = [[c.strip() for c in ln.split("|")] for ln in lines]
+        else:
+            # 行级事实形如 ``表头: 值; 表头2: 值2``。只有「键非纯数字、值非空」时才
+            # 还原成两列；否则（如扁平表格行、冒号错位）退回单列，绝不臆造列关系。
+            pairs = []
+            parseable = True
+            for ln in lines:
+                for part in re.split(r"[;；]", ln):
+                    part = part.strip()
+                    if not part:
+                        continue
+                    match = re.match(r"^([^:：]{1,60})[:：]\s*(.+)$", part)
+                    if not match:
+                        parseable = False
+                        break
+                    key, value = match.group(1).strip(), match.group(2).strip()
+                    if not key or not value or re.fullmatch(r"[\d.,%\-/]+", key):
+                        parseable = False
+                        break
+                    pairs.append([key, value])
+                if not parseable:
+                    break
+            if parseable and pairs:
+                rows = [["字段", "值"]] + pairs
+            else:
+                rows = [["表格行内容"]] + [[ln] for ln in lines]
+
+    if not rows:
+        return "", False
+
+    width = max(len(row) for row in rows)
+    rows = [row + [""] * (width - len(row)) for row in rows]
+    truncated = len(rows) > max_rows + 1
+    shown = rows[: max_rows + 1]
+
+    def esc(cell: str) -> str:
+        return cell.replace("|", "\\|").replace("\n", " ").strip()
+
+    header = shown[0]
+    body = shown[1:]
+    out = [
+        "| " + " | ".join(esc(c) for c in header) + " |",
+        "| " + " | ".join("---" for _ in header) + " |",
+    ]
+    out.extend("| " + " | ".join(esc(c) for c in row) + " |" for row in body)
+    if truncated:
+        out.append("")
+        out.append(f"（共 {len(rows) - 1} 行，此处展示前 {max_rows} 行）")
+    return "\n".join(out), truncated
+
+
 class RAGPipeline:
     """
     RAG完整流程编排类
@@ -924,10 +1010,13 @@ class RAGPipeline:
         orig_idx = index_map.get(idx, idx) if index_map else idx
         chunk_index: Optional[int] = None
         chunk_total: Optional[int] = None
+        payload: Dict[str, Any] = {}
+        chunk_type = "text"
         if aggregated_meta and idx in aggregated_meta:
             meta = aggregated_meta[idx]
             paper_path = meta.get("paper_path", "聚合表格/多源")
             full_text = candidate_docs[idx]
+            chunk_type = "table"
             # 聚合表格：转纯文本作为引用内容，避免"查看原文"只有占位文案
             summary_text = _table_html_to_text(full_text)
             if len(summary_text) > 1200:
@@ -937,6 +1026,7 @@ class RAGPipeline:
             paper_path = payload.get("source", "")
             chunk_index = payload.get("chunk_index")
             chunk_total = payload.get("chunk_total")
+            chunk_type = _resolve_chunk_type(payload)
             full_text = candidate_docs[idx] if idx < len(candidate_docs) else payload.get("content", "")
             # 优先使用预生成的摘要
             summary_text = payload.get("summary")
@@ -947,15 +1037,18 @@ class RAGPipeline:
             full_text = candidate_docs[idx] if idx < len(candidate_docs) else ""
             summary_text = full_text[:200]
 
+        # 图文分离：只有块内真的含图片标记（![](）时才提取图表标题；
+        # 表格块不挂图表标题，避免把图表数据展示在表格/纯文本引用卡片下。
         paper_image = ""
-        chart_pattern = r'图表\s*\d+\s*[：:]\s*[^\n]+'
-        match = re.search(chart_pattern, full_text)
-        if match:
-            paper_image = match.group(0).strip()
+        if chunk_type != "table" and "![]" in full_text:
+            chart_pattern = r'图表\s*\d+\s*[：:]\s*[^\n]+'
+            match = re.search(chart_pattern, full_text)
+            if match:
+                paper_image = match.group(0).strip()
+            if not paper_image:
+                paper_image = self._extract_image_title_with_llm(full_text)
 
-        # 如果正则没有匹配到，尝试用 LLM 提取
-        if not paper_image:
-            paper_image = self._extract_image_title_with_llm(full_text)
+        markdown, markdown_truncated = _table_text_to_markdown(full_text) if chunk_type == "table" else ("", False)
 
         # 引用片段口径：text 是该块内容的截断片段（非表格块默认前 200 字），
         # 前端据 text_total / text_truncated 标注「第 i/j 块 · 前 N 字 / 共 M 字」，避免被误读为完整原文
@@ -974,6 +1067,9 @@ class RAGPipeline:
             "paper_path": paper_path,
             "text": summary_text,
             "paper_image": paper_image,
+            "chunk_type": chunk_type,
+            "markdown": markdown,
+            "markdown_truncated": markdown_truncated,
             "chunk_index": chunk_index,
             "chunk_total": chunk_total,
             "text_total": text_total,

@@ -1,7 +1,7 @@
 """Multi-Agent（supervisor-workers）Prompt —— LangGraph 多 Agent 实验后端使用"""
 
 # 模块级版本号：修改本文件任一 Prompt 文本后递增（prompts/registry.json 同步登记）
-MULTI_AGENT_PROMPT_VERSION = "2026-10-18-v4"  # 阶段5：supervisor 输出轻量三分类 route_type（financial/research/mixed），不改变图结构
+MULTI_AGENT_PROMPT_VERSION = "2026-11-05-v5"  # 阶段5：supervisor 输出轻量三分类 route_type（financial/research/mixed），不改变图结构
 
 # supervisor：把用户问题拆解给财务/研报两个子 Agent（2026-08-26 新增）
 MULTI_AGENT_SUPERVISOR_PROMPT = """你是一个金融问答任务规划器。根据用户问题，把任务拆解给两个专业子 Agent：
@@ -45,4 +45,8 @@ MULTI_AGENT_AGGREGATOR_PROMPT = """你是金融分析报告汇总助手。下面
    ② 禁止自行合成预测区间、推算单季/单年预测，禁止输出目标价，禁止给出买入/卖出时机或操作建议（如“建议投资者…买入/配置/逢低吸纳”“具备较高配置吸引力”“可视为右侧/左侧交易的确认信号”“值得配置”等）；
    ③ 若用户明确索要预测区间或买入时机，说明本系统不提供该类建议，只转述研报公开观点；
    ④ 只要回答包含预测/评级类转述，结尾必须加一句：以上为研报公开观点的转述，不构成投资建议。
+7. 不同口径的数字必须分句、分别标注来源：连续列举“整体 vs 分部”“公司 vs 产品”“医药工业 vs 肝病用药”等不同口径指标时，
+   必须拆成不同句子并分别引用，禁止把两个口径的数字缝进同一句（包括总结句、对比句、收尾句），也不得用同一段引用覆盖两个口径；
+   严禁自行计算原文未提供的差值（如“13.9pct”“下降 13.9 个百分点”），只能提取原文数字；
+   数据来自不同段落或不同表格时，必须分别标注引用来源。
 """

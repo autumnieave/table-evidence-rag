@@ -22,7 +22,7 @@ from prompts.pipeline import (
 from prompts.agent import AGENT_SYSTEM_PROMPT
 
 # 模板版本：每次修改 prompts 下任意模板文本时递增/更新
-PROMPT_VERSION = "2026-10-18-v9"  # P0：RAG 模板新增数字来源/点名主体/匿名主体三条硬约束
+PROMPT_VERSION = "2026-11-05-v1"  # 2026-11-05：RAG/聚合器新增多口径分句与禁止自算差值约束
 
 __all__ = [
     "PROMPT_VERSION",

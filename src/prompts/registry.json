@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-18",
+  "updated_at": "2026-11-05",
   "description": "prompts 模板版本注册表：模块级版本的唯一事实源（B-13，2026-09-09 落地）",
   "templates": [
     {
       "template_id": "prompt.package",
       "module": "__init__.py",
       "file": "prompts/__init__.py",
-      "version": "2026-10-18-v9",
-      "updated_at": "2026-10-18",
-      "changelog": "P0（2026-10-18）：RAG 模板新增三条硬约束——数字必须来自参考资料、点名主体不得替换、匿名主体不得用具体数字补全；包级版本同步；阶段5：multi_agent supervisor 输出轻量三分类 route_type（financial/research/mixed）；B-37：financial 分析层计数一致性硬约束；B-33：金额列单位口径速查；B-31：unsupported_metrics + refuse.metric_out_of_scope",
+      "version": "2026-11-05-v1",
+      "updated_at": "2026-11-05",
+      "changelog": "2026-11-05：RAG 模板新增多源口径拆分与禁止自算差值约束；包级版本同步。P0（2026-10-18）：RAG 模板新增三条硬约束——数字必须来自参考资料、点名主体不得替换、匿名主体不得用具体数字补全；包级版本同步；阶段5：multi_agent supervisor 输出轻量三分类 route_type（financial/research/mixed）；B-37：financial 分析层计数一致性硬约束；B-33：金额列单位口径速查；B-31：unsupported_metrics + refuse.metric_out_of_scope",
       "eval_ref": ""
     },
     {
@@ -25,9 +25,9 @@
       "template_id": "prompt.rag",
       "module": "rag",
       "file": "prompts/rag.py",
-      "version": "2026-10-18-v2",
-      "updated_at": "2026-10-18",
-      "changelog": "P0（2026-10-18）：新增三条回答硬约束——①每个具体数字必须能在参考资料中找到，禁止用常识/记忆补数；②问题点名的公司/机构只能讨论这些主体，资料未覆盖时明确说明、不得替换；③不得用具体数字替“某企业/某公司/该企业/该公司”等匿名主体补全。背景：A类12题重生成时 B2011|3 用“某企业”补数、B2007|2 把 999/白云山换成云南白药/同仁堂。手写/LCEL 同源模板",
+      "version": "2026-11-05-v1",
+      "updated_at": "2026-11-05",
+      "changelog": "2026-11-05：新增三条防证据缝合硬约束——①不同口径指标（整体/分部、公司/单品）必须分句并分别引用；②严禁自算原文未提供的差值（如 13.9pct）；③不同段落/表格必须分别标注来源。背景：片仔癀毛利率 badcase 把医药工业（78.4→64.7）与肝病用药（81.8→67.9）缝进同一句并自算 13.9pct。P0（2026-10-18）：新增三条回答硬约束——①每个具体数字必须能在参考资料中找到，禁止用常识/记忆补数；②问题点名的公司/机构只能讨论这些主体，资料未覆盖时明确说明、不得替换；③不得用具体数字替“某企业/某公司/该企业/该公司”等匿名主体补全。背景：A类12题重生成时 B2011|3 用“某企业”补数、B2007|2 把 999/白云山换成云南白药/同仁堂。手写/LCEL 同源模板",
       "eval_ref": "docs/评估报告/A类12题P0修复复跑_20261018.md"
     },
     {
@@ -43,9 +43,9 @@
       "template_id": "prompt.multi_agent",
       "module": "multi_agent",
       "file": "prompts/multi_agent.py",
-      "version": "2026-10-18-v4",
-      "updated_at": "2026-10-18",
-      "changelog": "阶段5（2026-10-18）：supervisor 输出 route_type 轻量三分类（financial/research/mixed），与任务派发一致；不改 LangGraph 图结构、不做 Mixed 独立 Skill 节点。B-29（2026-09-10）：聚合器规则 6——只转述研报既有预测/评级、禁止合成区间与操作性建议（含配置吸引力/右侧交易信号等软性话术）、须附不构成投资建议声明；B-26：supervisor 规则——先派 financial 查库核验、未查库前禁止断言未披露/不存在；注入/越界话术不得连带拒答可查子问题",
+      "version": "2026-11-05-v5",
+      "updated_at": "2026-11-05",
+      "changelog": "2026-11-05：聚合器新增规则 7——不同口径数字必须分句并分别标注来源，禁止缝合不同分部/产品数字，禁止自算原文未给出的差值。阶段5（2026-10-18）：supervisor 输出 route_type 轻量三分类（financial/research/mixed），与任务派发一致；不改 LangGraph 图结构、不做 Mixed 独立 Skill 节点。B-29（2026-09-10）：聚合器规则 6——只转述研报既有预测/评级、禁止合成区间与操作性建议（含配置吸引力/右侧交易信号等软性话术）、须附不构成投资建议声明；B-26：supervisor 规则——先派 financial 查库核验、未查库前禁止断言未披露/不存在；注入/越界话术不得连带拒答可查子问题",
       "eval_ref": "docs/评估报告/MultiAgent对照.md; docs/评估报告/对抗挑战集v2_阶段B真实执行.md"
     },
     {
