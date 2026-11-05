@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -241,6 +241,42 @@ def _get_query_cache():
         return None
     return getattr(pipeline, "query_cache", None)
 
+
+_semantic_cache: Any = None
+
+
+def _get_semantic_cache():
+    """返回启用的语义缓存实例（SEMANTIC_CACHE_ENABLED=false 时为 None）。
+
+    懒加载：避免默认关闭时也初始化 Redis / Embedding 依赖。
+    """
+    global _semantic_cache
+    if not getattr(config, "SEMANTIC_CACHE_ENABLED", False):
+        return None
+    if _semantic_cache is None:
+        from utils.semantic_cache import SemanticCache
+
+        _semantic_cache = SemanticCache(
+            embedding_client=pipeline.embedding_client,
+            redis_url=getattr(config, "SEMANTIC_CACHE_REDIS_URL", "redis://localhost:6379/1"),
+            threshold=float(getattr(config, "SEMANTIC_CACHE_THRESHOLD", 0.92)),
+            ttl=int(getattr(config, "SEMANTIC_CACHE_TTL", 86400)),
+            max_entries=int(getattr(config, "SEMANTIC_CACHE_MAX_ENTRIES", 1000)),
+            version=str(getattr(config, "SEMANTIC_CACHE_VERSION", "v1")),
+        )
+    return _semantic_cache
+
+
+@app.get("/cache/stats")
+async def cache_stats():
+    """返回精确缓存与语义缓存的运行统计（语义缓存未启用时 semantic=None）。"""
+    exact = _get_query_cache()
+    semantic = _get_semantic_cache()
+    return {
+        "exact": exact.stats() if exact is not None and hasattr(exact, "stats") else None,
+        "semantic": semantic.stats() if semantic is not None else None,
+    }
+
 def _normalize_images(images: List[str]) -> List[str]:
     """
     将后端图片路径统一为可访问的相对 URL：
@@ -261,9 +297,10 @@ def _normalize_images(images: List[str]) -> List[str]:
 
 
 @app.post("/chat")
-async def chat(request: ChatRequest, http_request: Request):
+async def chat(request: ChatRequest, http_request: Request, response: Response):
     trace = getattr(http_request.state, "trace", None)
     if trace is not None:
+        response.headers["X-Trace-Id"] = trace.trace_id
         trace.mode = request.mode or "rag"
         trace.extra["question_chars"] = len(request.question or "")
         # 显式注入当前上下文：不依赖 ASGI 中间件的 contextvar 传播，
@@ -279,7 +316,25 @@ async def chat(request: ChatRequest, http_request: Request):
                 trace.cache_hit = True
             if isinstance(hit, dict) and hit.get("image"):
                 hit["image"] = _normalize_images(hit["image"])
+            response.headers["X-Cache-Status"] = "exact_hit"
             return hit
+
+    semantic = _get_semantic_cache()
+    semantic_ns = f"{(request.mode or 'rag')}:{request.user_id}"
+    if semantic is not None:
+        semantic_hit = semantic.get(request.question, semantic_ns)
+        if semantic_hit is not None:
+            if trace is not None:
+                trace.cache_hit = True
+                trace.extra["cache_layer"] = "semantic"
+                trace.extra["semantic_similarity"] = semantic.last_similarity
+                trace.extra["semantic_lookup_ms"] = semantic.last_lookup_ms
+            if isinstance(semantic_hit.get("image"), list):
+                semantic_hit["image"] = _normalize_images(semantic_hit["image"])
+            response.headers["X-Cache-Status"] = "semantic_hit"
+            response.headers["X-Semantic-Similarity"] = str(semantic.last_similarity)
+            return semantic_hit
+
     try:
         if request.mode == "agent":
             result = pipeline.agent_query(request.question, user_id=request.user_id)
@@ -295,6 +350,9 @@ async def chat(request: ChatRequest, http_request: Request):
             result = {"content": result, "image": [], "references": []}
         if cache is not None and cache_key is not None:
             cache.set(cache_key, result)
+        if semantic is not None:
+            semantic.set(request.question, result, semantic_ns)
+        response.headers["X-Cache-Status"] = "miss"
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

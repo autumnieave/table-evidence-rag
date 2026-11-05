@@ -260,6 +260,21 @@ class RAGConfig:
     QUERY_CACHE_VERSION: str = field(default_factory=lambda: _env("QUERY_CACHE_VERSION", ""))
     """缓存版本号（默认空）：修改 SQL 生成/分析提示词或 FINANCIAL_PROMPT_VERSION 后 bump 该值（env QUERY_CACHE_VERSION=v2），强制旧缓存失效，避免命中过期 SQL"""
     """查询缓存 TTL（秒），默认 24h；改提示词规则后需清缓存或调小"""
+
+    # ── 语义缓存（P0 验证：Redis 相似问法命中，默认关）──────────────────
+    SEMANTIC_CACHE_ENABLED: bool = field(default_factory=lambda: _env("SEMANTIC_CACHE_ENABLED", "false").lower() == "true")
+    """语义缓存开关（默认关）：仅接 /chat 非流式链路；命中后直接回放结果，跳过检索与生成"""
+    SEMANTIC_CACHE_REDIS_URL: str = field(default_factory=lambda: _env("SEMANTIC_CACHE_REDIS_URL", "redis://localhost:6379/1"))
+    """语义缓存 Redis 连接串（独立 DB，避免与会话记忆键冲突）"""
+    SEMANTIC_CACHE_THRESHOLD: float = field(default_factory=lambda: float(_env("SEMANTIC_CACHE_THRESHOLD", "0.92")))
+    """余弦相似度阈值（默认 0.92）；低于阈值按未命中处理"""
+    SEMANTIC_CACHE_TTL: int = field(default_factory=lambda: int(_env("SEMANTIC_CACHE_TTL", "86400")))
+    """语义缓存 TTL（秒），默认 24h"""
+    SEMANTIC_CACHE_MAX_ENTRIES: int = field(default_factory=lambda: int(_env("SEMANTIC_CACHE_MAX_ENTRIES", "1000")))
+    """单 namespace 最大条目数，超出按时间淘汰最旧条目"""
+    SEMANTIC_CACHE_VERSION: str = field(default_factory=lambda: _env("SEMANTIC_CACHE_VERSION", "v1"))
+    """语义缓存版本号：提示词/检索口径变更后 bump，强制旧缓存失效"""
+
     AGENT_PARALLEL_TOOLS: bool = field(default_factory=lambda: _env("AGENT_PARALLEL_TOOLS", "true").lower() == "true")
     """Agent 工具/子任务是否并行执行（自研 AgentPlanner 同轮多工具、LangGraph 多 Agent 子任务）"""
     # ── SQL 校验（Agent 工具循环三层防线）────────────────────────────

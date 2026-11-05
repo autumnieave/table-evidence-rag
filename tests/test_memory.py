@@ -60,5 +60,6 @@ def test_sqlite_store_no_expiry(tmp_path):
 def test_create_store_backends(tmp_path):
     assert create_memory_store(backend="none") is None
     assert create_memory_store(backend="sqlite", db_path=str(tmp_path / "m.db"), ttl=60) is not None
-    # redis 未安装时应优雅降级为 None（不抛异常）
-    assert create_memory_store(backend="redis") is None
+    # redis 不可用时应优雅降级为 None（不抛异常）。
+    # 用不可达端口，避免依赖“当前环境是否装了 redis / 是否启动了服务”。
+    assert create_memory_store(backend="redis", redis_url="redis://127.0.0.1:1/0") is None
