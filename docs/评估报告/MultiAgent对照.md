@@ -61,7 +61,7 @@ aggregator 缺引用时代码兜底合并（按 paper_path 去重）/ 默认关�
 
 
 - **不是**把生产切到多 Agent：`AGENT_LANGGRAPH_MULTI_AGENT` 默认关闭，自研主链路与 LangGraph 单 Agent 行为不变。
-- 面试口径："自研单 Agent（双工具编排，224/224 回归基线）保生产稳定；LangGraph 版在 StateGraph 上扩展了
+- 评测口径："自研单 Agent（双工具编排，224/224 回归基线）保生产稳定；LangGraph 版在 StateGraph 上扩展了
   supervisor-workers 多 Agent 协作——规划拆任务、财务/研报子 Agent 并行取数、汇总成报告，验证了复杂任务的
   编排能力；多 Agent 的核心是显式状态和路由，所以放在图框架上做，而不是手写循环。"
 - 待办：真实链路（Qdrant + Dify 在线）跑 2-3 个复合问题样例记录到本文件；若要做"并行取数"可改用 LangGraph

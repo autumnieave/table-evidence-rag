@@ -66,10 +66,10 @@ database/*.sql
 !database/schema.sql
 !database/create_readonly_user.sql
 
-# ===== 文档（二进制 / 面试材料，不上传 GitHub） =====
+# ===== 文档（二进制 / 内部材料，不上传 GitHub） =====
 docs/论文/
 docs/*.pdf
-docs/面试准备/
+docs/项目归档/
 
 database/测试数据库.sql
 
@@ -92,12 +92,8 @@ htmlcov/
 database/*.pkl
 训练结果数据/
 
-# 内部隐私资产（绝对不可公开）
+# 内部归档资产（本地保留，不入库）
 docs/评估报告/L5新集合标注工作单_v1.md
-docs/简历_RAG项目_20261023.md
-docs/面试材料_RAG项目_20261023.md
-docs/岗位叙事侧重_20261023.md
-docs/evidence/简历措辞.md
 
 # ===== 模型权重与运行时产物（2026-11-03 迁移 private 前补齐）=====
 # 模型权重

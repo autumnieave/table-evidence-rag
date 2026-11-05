@@ -9,8 +9,8 @@
 - 分块参数存在双默认值：`data/splitter.py::split_documents` 默认 `chunk_overlap=150`，
   而 `config/rag_config.py` 默认 `CHUNK_OVERLAP=100`；`pipelines/rag_pipeline.py` 建索引时显式传 config 值，
   线上实际按 **100** 构建。
-- 简历/项目叙事此前写"经实验对比确定 overlap=150 为最佳平衡点"，无实验证据支撑。
-- 本实验用可复现数据确定最优值，统一代码与简历口径。
+- 项目材料/项目叙事此前写"经实验对比确定 overlap=150 为最佳平衡点"，无实验证据支撑。
+- 本实验用可复现数据确定最优值，统一代码与项目材料口径。
 
 ## 二、实验设计
 
@@ -78,8 +78,8 @@
    - `data/splitter.py` 默认 `chunk_overlap` 150 → **100**（与 config 一致，消除双默认值）；
    - `config/rag_config.py` `CHUNK_OVERLAP=100`（不变）、`.env.example` `CHUNK_OVERLAP=100`（不变）；
    - `AGENTS.md` 分块注意条目改为"口径已统一为 100"；
-   - 简历/面试口径：不再写"overlap=150 最佳"，改口"做过 overlap 对比实验（5 档离线统计 + 双集合检索对比），
-     100 为实测最优"（见 `docs/面试准备/简历口径与证据链.md`）。
+   - 项目材料/评测口径：不再写"overlap=150 最佳"，改口"做过 overlap 对比实验（5 档离线统计 + 双集合检索对比），
+     100 为实测最优"。
 3. **索引重建**：线上 `research_reports_v3_full` 本按 100 构建；本次仍用 `--chunk-overlap 100 --force`
    全量重建验证，集合点数与构建耗时见重建日志。
 

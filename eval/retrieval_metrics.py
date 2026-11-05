@@ -114,7 +114,7 @@ PARTIAL_WEIGHT = 0.5
 
 
 def _judged_caliber(partial_weight: float = PARTIAL_WEIGHT) -> Dict[str, Any]:
-    """B-24B 口径说明（写进 JSON，便于报告与面试口径一致）"""
+    """B-24B 口径说明（写进 JSON，便于报告与评测口径一致）"""
     return {
         "模式": "judged（四态人工判定，B-24B 定稿 2026-09-27）",
         "相关性四态": "完全相关 / 部分相关 / 不相关 / 未判定（空）",

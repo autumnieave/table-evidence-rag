@@ -118,15 +118,15 @@ LangGraph 版 Agent 接入 LangGraph **checkpointer**，按 `thread_id=user_id` 
 
 **口径提醒**（**时效标注**：该结论限于 2026-08-23 对照期；**2026-08-30 起 `.env` 已切 `AGENT_PLANNER_BACKEND=langgraph` + `AGENT_LANGGRAPH_MULTI_AGENT=true`（supervisor-workers 多 Agent 主链路）**，见 `MultiAgent对照.md`。）：checkpoint 是 LangGraph 后端的能力，切换 `planner langgraph` 后生效；
 自研 `handwritten`（现为**回退路径**）的记忆由 `memory/store.py`（SQLite/Redis 按 user_id）负责。
-面试可讲："LangGraph 版用 thread_id + checkpointer 实现了会话状态落盘与恢复（SQLite，重启不丢），
+对外可讲："LangGraph 版用 thread_id + checkpointer 实现了会话状态落盘与恢复（SQLite，重启不丢），
 验证了框架级持久化能力，为后续迁移 LangGraph 生态铺路。"
 
 
 - **LangGraph 优点**：显式状态机、声明式条件边、可 checkpoint/人审/可视化、生态标准、便于多人协作与复用现成模式。
 - **自研优点**：零依赖、完全可控、易调试（状态就是一个列表）、少一层抽象、已通过 224/224 Agent 回归基线。
 - **本项目决策**（**时效标注**：该结论限于 2026-08-23 对照期；**2026-08-30 起 `.env` 已切 `AGENT_PLANNER_BACKEND=langgraph` + `AGENT_LANGGRAPH_MULTI_AGENT=true`（supervisor-workers 多 Agent 主链路）**，见 `MultiAgent对照.md`。）：当时默认保留自研 `handwritten`（回归基线、零依赖）；**现状已切换为 LangGraph supervisor-workers 多 Agent 主链路**，`handwritten` 降为回退路径。
-- **面试口径建议**（已按现状更新）："演进路径是自研 Function Calling → LangGraph StateGraph 对照版 → **supervisor-workers 多 Agent 主链路**（`.env` 默认，同 prompt/同工具/同输出契约，经 80 题同口径对照后落地），自研版保留一键回退。LangGraph 的优势在显式状态、条件路由与 checkpointer，自研的优势在零依赖与完全可控。"
-- **简历表述建议**：可写"自研 Agent 编排（Function Calling 多步推理）并实现 LangGraph StateGraph 对照版"，避免写成"基于 LangChain Agent"。
+- **评测口径建议**（已按现状更新）："演进路径是自研 Function Calling → LangGraph StateGraph 对照版 → **supervisor-workers 多 Agent 主链路**（`.env` 默认，同 prompt/同工具/同输出契约，经 80 题同口径对照后落地），自研版保留一键回退。LangGraph 的优势在显式状态、条件路由与 checkpointer，自研的优势在零依赖与完全可控。"
+- **项目材料表述建议**：可写"自研 Agent 编排（Function Calling 多步推理）并实现 LangGraph StateGraph 对照版"，避免写成"基于 LangChain Agent"。
 
 
 - ~~Agent 循环统一关闭思考模式~~ → 已完成（`AGENT_ENABLE_THINKING=false` 默认，两版同源）。
