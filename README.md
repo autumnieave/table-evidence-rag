@@ -202,13 +202,14 @@ data: {"type":"error","message":"upstream timeout after 30s","retryable":true}
 
 | 场景 | 系统行为 | 客户端可见 |
 | --- | --- | --- |
-| MySQL schema/连接加载失败 | `native_financial` 捕获后返回 `build_refuse_system_unavailable` 结构化拒答，不抛 500 | HTTP 200，`route_type="financial"`，`content` 为可读拒答话术 |
+| MySQL schema/连接加载失败 | `native_financial` 捕获后返回 `build_refuse_system_unavailable` 结构化拒答，不抛 500 | HTTP 200 + 可读拒答话术；流式 `meta` 按实际阶段标记 `route_type="financial"` |
 | MySQL 建连超时 | 单次连接 `connect_timeout=5s`，失败即降级为结构化拒答 | HTTP 200 + 拒答话术 |
 | SQL 执行过长 | 会话级 `MAX_EXECUTION_TIME=15000ms`，校验器返回错误并由财务 Agent 转为拒答 | HTTP 200 + 拒答话术 |
 | 多 Agent 单个子任务异常 | 并行子任务各自捕获异常，其余子任务继续；全部为空时返回“抱歉，未能完成查询。” | HTTP 200 + 兜底文案 |
 | Agent 汇总 JSON 非法 | 契约闸门拒绝透传原始 JSON，替换为可读兜底并记录格式事件 | HTTP 200 + 兜底文案 |
 | 网络超时 / 上游 429 / 5xx | SSE 推送 `error`，`retryable=true` | 可安全重试 |
-| 参数缺失 / `mode` 非枚举 / 业务拒答 | HTTP 422 或 `error` 帧，`retryable=false` | 不可重试，需修正请求 |
+| 参数缺失 / `mode` 非枚举 | HTTP 422（FastAPI 校验） | 不可重试，需修正请求 |
+| 业务拒答（口径不匹配/无数据） | 正常返回结构化拒答文案，不作为异常抛出 | HTTP 200 + 拒答话术；若以 `error` 帧透传则 `retryable=false` |
 | 用户级限流（默认 20 req/min） | 返回 429，并带 `Retry-After` 秒数 | 按 `Retry-After` 退避 |
 
 ### 5. SSE 断点续传
