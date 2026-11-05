@@ -28,6 +28,8 @@ class StubConfig:
     """app.api 运行所需的配置子集（其余属性不会在 stub 路径被读取）。"""
 
     QUERY_CACHE_ENABLED = False
+    API_RATE_LIMIT_BACKEND = "memory"
+    USER_RATE_LIMIT_ENABLED = False
     QDRANT_COLLECTION_NAME = "test_collection"
     CITATION_CORPUS_ROOT = "__missing_corpus__"
     CITATION_MATCH_MODE = "smart"
@@ -228,6 +230,33 @@ def test_chat_wrong_question_type_422(api_env) -> None:
     client, *_ = api_env
     resp = client.post("/chat", json={"question": 123})
     assert resp.status_code == 422
+
+
+def test_chat_user_rate_limit_429(api_env, monkeypatch) -> None:
+    """超过 user_id 限额返回 429 + Retry-After。"""
+    client, api_module, stub_cfg, _ = api_env
+    monkeypatch.setattr(stub_cfg, "USER_RATE_LIMIT_ENABLED", True, raising=False)
+
+    class FakeUserLimiter:
+        limit = 2
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def allow(self, key: str, now=None):
+            self.calls += 1
+            return (self.calls <= self.limit, 5.0 if self.calls > self.limit else 0.0)
+
+    fake = FakeUserLimiter()
+    monkeypatch.setattr(api_module, "_get_user_rate_limiter", lambda: fake)
+
+    ok1 = client.post("/chat", json={"question": "限流1", "user_id": "rl-user"})
+    ok2 = client.post("/chat", json={"question": "限流2", "user_id": "rl-user"})
+    limited = client.post("/chat", json={"question": "限流3", "user_id": "rl-user"})
+
+    assert ok1.status_code == 200 and ok2.status_code == 200
+    assert limited.status_code == 429
+    assert limited.headers.get("Retry-After") == "5"
 
 
 # ── /chat/stream（SSE）───────────────────────────────────────────────

@@ -98,7 +98,15 @@ class RAGConfig:
     API_AUTH_ENABLED: Optional[bool] = field(default_factory=lambda: _env_optional_bool("API_AUTH_ENABLED"))
     """显式鉴权开关；未设置时自动策略=API_KEYS 非空则启用"""
     API_RATE_LIMIT_PER_MINUTE: int = field(default_factory=lambda: int(_env("API_RATE_LIMIT_PER_MINUTE", "10")))
-    """每个 key 每分钟允许的请求数（单进程内存滑动窗口）"""
+    """每个 API key 每分钟允许的请求数（redis=分布式滑动窗口；memory=单进程）"""
+    API_RATE_LIMIT_BACKEND: str = field(default_factory=lambda: _env("API_RATE_LIMIT_BACKEND", "redis").strip().lower())
+    """限流后端：redis=Redis+Lua 分布式滑动窗口（不可用时自动降级 memory）/ memory=单进程内存"""
+    API_RATE_LIMIT_REDIS_URL: str = field(default_factory=lambda: _env("API_RATE_LIMIT_REDIS_URL", "redis://localhost:6379/2"))
+    """限流 Redis 连接串（独立 DB；普通 Redis 即可，不依赖 RedisJSON/RediSearch）"""
+    USER_RATE_LIMIT_ENABLED: bool = field(default_factory=lambda: _env("USER_RATE_LIMIT_ENABLED", "true").lower() == "true")
+    """是否按 user_id 限流（/chat、/chat/stream、/chat/clarify）"""
+    USER_RATE_LIMIT_PER_MINUTE: int = field(default_factory=lambda: int(_env("USER_RATE_LIMIT_PER_MINUTE", "20")))
+    """每个 user_id 每分钟允许的请求数（默认 20）"""
     API_AUTH_EXEMPT_PATHS: str = field(default_factory=lambda: _env("API_AUTH_EXEMPT_PATHS", "/health,/docs,/redoc,/openapi.json"))
     """免鉴权路径，逗号分隔"""
     AGENT_PLANNER_BACKEND: str = field(default_factory=lambda: _env("AGENT_PLANNER_BACKEND", "handwritten"))
@@ -111,6 +119,8 @@ class RAGConfig:
     """LangGraph checkpoint 后端：sqlite=落盘（默认，需 langgraph-checkpoint-sqlite 包）/ memory=进程内存 / none=关闭"""
     AGENT_LANGGRAPH_CHECKPOINT_PATH: str = field(default_factory=lambda: _env("AGENT_LANGGRAPH_CHECKPOINT_PATH", "database/langgraph_checkpoints.sqlite"))
     """LangGraph checkpoint SQLite 文件路径（运行时数据，已 gitignore）"""
+    AGENT_LANGGRAPH_CHECKPOINT_REDIS_URL: str = field(default_factory=lambda: _env("AGENT_LANGGRAPH_CHECKPOINT_REDIS_URL", "redis://localhost:6380/0"))
+    """LangGraph checkpoint Redis 连接串（需 RedisJSON + RediSearch，即 Redis Stack；默认端口 6380 避免与普通 Redis 混用）"""
     AGENT_LANGGRAPH_MAX_HISTORY: int = field(default_factory=lambda: int(_env("AGENT_LANGGRAPH_MAX_HISTORY", "40")))
     """LangGraph checkpoint 读回的历史消息条数上限（保留首条 system 提示词）"""
     AGENT_LANGGRAPH_MULTI_AGENT: bool = field(default_factory=lambda: _env("AGENT_LANGGRAPH_MULTI_AGENT", "false").lower() == "true")

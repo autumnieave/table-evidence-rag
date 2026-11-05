@@ -72,18 +72,40 @@ class LangGraphPlanner:
         self.config = config
         self.rag = rag_pipeline
         self._sqlite_conn = None
+        self._redis_saver = None
         self._checkpointer = self._build_checkpointer()
         self._graph = self._build_graph()
 
     # ── Checkpoint（会话记忆持久化）─────────────────────────────────────
     def _build_checkpointer(self) -> Any:
-        """按配置构建 LangGraph checkpointer：sqlite=落盘（默认）/ memory=进程内存 / none=关闭。
+        """按配置构建 LangGraph checkpointer：sqlite=落盘（默认）/ redis=Redis Stack / memory=进程内存 / none=关闭。
 
-        sqlite 后端依赖 langgraph-checkpoint-sqlite 包；初始化失败降级为内存，保证主流程可用。
+        sqlite 后端依赖 langgraph-checkpoint-sqlite 包；redis 后端依赖
+        langgraph-checkpoint-redis + RedisJSON/RediSearch（Redis Stack）。redis
+        初始化失败时降级 sqlite，sqlite 也失败才降级内存，保证主流程可用。
         """
         if not getattr(self.config, "AGENT_LANGGRAPH_CHECKPOINT", True):
             return None
         backend = str(getattr(self.config, "AGENT_LANGGRAPH_CHECKPOINT_BACKEND", "sqlite")).strip().lower()
+        if backend == "redis":
+            try:
+                from langgraph.checkpoint.redis import RedisSaver  # noqa: PLC0415
+
+                url = str(
+                    getattr(
+                        self.config,
+                        "AGENT_LANGGRAPH_CHECKPOINT_REDIS_URL",
+                        "redis://localhost:6380/0",
+                    )
+                )
+                saver = RedisSaver(redis_url=url)
+                saver.setup()
+                self._redis_saver = saver
+                logger.info("LangGraph checkpoint 已启用（redis: %s）", url)
+                return saver
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("LangGraph redis checkpoint 初始化失败，降级 sqlite: %s", exc)
+                backend = "sqlite"
         if backend == "sqlite":
             try:
                 import sqlite3  # noqa: PLC0415
@@ -105,7 +127,16 @@ class LangGraphPlanner:
         return MemorySaver()
 
     def close(self) -> None:
-        """释放 sqlite checkpoint 连接（进程退出/测试清理时调用）。"""
+        """释放 sqlite / redis checkpoint 连接（进程退出/测试清理时调用）。"""
+        saver = getattr(self, "_redis_saver", None)
+        if saver is not None:
+            try:
+                client = getattr(saver, "_redis", None)
+                if client is not None:
+                    client.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._redis_saver = None
         conn = getattr(self, "_sqlite_conn", None)
         if conn is not None:
             try:

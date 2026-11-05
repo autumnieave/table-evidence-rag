@@ -1,4 +1,4 @@
-﻿fastapi>=0.110.0
+fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
 python-multipart>=0.0.9
 openai>=1.0.0
@@ -21,6 +21,8 @@ langchain-openai>=0.1.0
 langchain-text-splitters>=0.3.0
 langgraph>=1.0.0
 langgraph-checkpoint-sqlite>=3.1.1
+langgraph-checkpoint-redis>=0.6.0  # LangGraph 状态外置（需 Redis Stack：RedisJSON + RediSearch）
+redis>=5.0.0                    # 分布式限流(zset+Lua) / 语义缓存 / 会话记忆
 pydantic>=2.0.0
 # 数据与校验（SQL 静态校验 / MySQL 编译 / golden set）
 pymysql>=1.1.0

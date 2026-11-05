@@ -9,7 +9,7 @@ import logging
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.schemas import ChatRequest, ChatResponse, ClarifyRequest
-from utils.api_security import SlidingWindowRateLimiter, extract_api_key, parse_api_keys
+from utils.api_security import create_rate_limiter, extract_api_key, parse_api_keys
 from utils.query_cache import make_cache_key
 from utils.observability import RequestTrace, finalize_and_log, reset_trace, set_trace
 from core.pipeline import get_config, get_pipeline
@@ -119,20 +119,68 @@ def _is_api_exempt(path: str) -> bool:
     return False
 
 
-def _get_rate_limiter() -> SlidingWindowRateLimiter:
-    """按配置的每分钟限额懒加载；限额变化时重建。"""
+def _get_rate_limiter() -> Any:
+    """按配置的每分钟限额懒加载；限额/后端变化时重建（redis 不可用自动降级 memory）。"""
     global _RATE_LIMITER
     limit = int(getattr(config, "API_RATE_LIMIT_PER_MINUTE", 10) or 10)
-    if _RATE_LIMITER is None or _RATE_LIMITER.limit != max(1, limit):
-        _RATE_LIMITER = SlidingWindowRateLimiter(limit=limit)
+    backend = str(getattr(config, "API_RATE_LIMIT_BACKEND", "redis")).strip().lower()
+    redis_url = str(getattr(config, "API_RATE_LIMIT_REDIS_URL", "") or "")
+    signature = (max(1, limit), backend, redis_url)
+    if _RATE_LIMITER is None or getattr(_RATE_LIMITER, "_signature", None) != signature:
+        _RATE_LIMITER = create_rate_limiter(
+            limit=limit,
+            backend=backend,
+            redis_url=redis_url,
+            prefix="rl:api_key",
+        )
+        _RATE_LIMITER._signature = signature
     return _RATE_LIMITER
 
 
+_USER_RATE_LIMITER: Any = None
+
+
+def _get_user_rate_limiter() -> Any:
+    """按 user_id 的每分钟限额懒加载（与 API key 限流相互独立）。"""
+    global _USER_RATE_LIMITER
+    limit = int(getattr(config, "USER_RATE_LIMIT_PER_MINUTE", 20) or 20)
+    backend = str(getattr(config, "API_RATE_LIMIT_BACKEND", "redis")).strip().lower()
+    redis_url = str(getattr(config, "API_RATE_LIMIT_REDIS_URL", "") or "")
+    signature = (max(1, limit), backend, redis_url)
+    if _USER_RATE_LIMITER is None or getattr(_USER_RATE_LIMITER, "_signature", None) != signature:
+        _USER_RATE_LIMITER = create_rate_limiter(
+            limit=limit,
+            backend=backend,
+            redis_url=redis_url,
+            prefix="rl:user",
+        )
+        _USER_RATE_LIMITER._signature = signature
+    return _USER_RATE_LIMITER
+
+
+async def _enforce_user_rate_limit(user_id: Optional[str]) -> None:
+    """按 user_id 做 20 req/min 限流；超限抛 429 并带 Retry-After。"""
+    if not bool(getattr(config, "USER_RATE_LIMIT_ENABLED", True)):
+        return
+    limiter = _get_user_rate_limiter()
+    allowed, retry_after = await asyncio.to_thread(
+        limiter.allow, str(user_id or "default")
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="rate limit exceeded",
+            headers={"Retry-After": str(max(1, int(round(retry_after))))},
+        )
+
+
 def reset_api_rate_limiter() -> None:
-    """清空限流窗口（测试/运维用）。"""
-    global _RATE_LIMITER
+    """清空 API key 与 user_id 限流窗口（测试/运维用）。"""
+    global _RATE_LIMITER, _USER_RATE_LIMITER
     if _RATE_LIMITER is not None:
         _RATE_LIMITER.reset()
+    if _USER_RATE_LIMITER is not None:
+        _USER_RATE_LIMITER.reset()
 
 
 @app.middleware("http")
@@ -306,6 +354,7 @@ async def chat(request: ChatRequest, http_request: Request, response: Response):
         # 显式注入当前上下文：不依赖 ASGI 中间件的 contextvar 传播，
         # 否则 pipeline.query 里的 get_trace() 可能拿不到 trace，阶段耗时全为 null。
         set_trace(trace)
+    await _enforce_user_rate_limit(request.user_id)
     cache = _get_query_cache()
     cache_key = None
     if cache is not None:
@@ -364,6 +413,8 @@ async def chat_stream(request: ChatRequest, http_request: Request):
     - rag：真实逐 token（检索/精排完成后立即输出生成内容）
     - agent：阶段事件（stage）即时反馈 + 完成后逐字输出，避免长任务等待期无反馈
     """
+
+    await _enforce_user_rate_limit(request.user_id)
 
     async def generate():
         trace = getattr(http_request.state, "trace", None)
@@ -521,6 +572,7 @@ async def chat_stream(request: ChatRequest, http_request: Request):
 @app.post("/chat/clarify")
 async def chat_clarify(request: ClarifyRequest, http_request: Request):
     """多轮澄清对话：自动提取过滤条件，缺字段时反问，补齐后执行检索生成答案"""
+    await _enforce_user_rate_limit(request.user_id)
     trace = getattr(http_request.state, "trace", None)
     if trace is not None:
         trace.mode = "clarify"
