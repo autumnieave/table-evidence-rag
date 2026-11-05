@@ -322,7 +322,7 @@ async def chat(request: ChatRequest, http_request: Request, response: Response):
     semantic = _get_semantic_cache()
     semantic_ns = f"{(request.mode or 'rag')}:{request.user_id}"
     if semantic is not None:
-        semantic_hit = semantic.get(request.question, semantic_ns)
+        semantic_hit = await asyncio.to_thread(semantic.get, request.question, semantic_ns)
         if semantic_hit is not None:
             if trace is not None:
                 trace.cache_hit = True
@@ -351,7 +351,7 @@ async def chat(request: ChatRequest, http_request: Request, response: Response):
         if cache is not None and cache_key is not None:
             cache.set(cache_key, result)
         if semantic is not None:
-            semantic.set(request.question, result, semantic_ns)
+            await asyncio.to_thread(semantic.set, request.question, result, semantic_ns)
         response.headers["X-Cache-Status"] = "miss"
         return result
     except Exception as e:
@@ -396,6 +396,37 @@ async def chat_stream(request: ChatRequest, http_request: Request):
                     await asyncio.sleep(0.008)
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return
+
+        # 语义缓存：与精确缓存同一回放协议（meta → content → done）
+        semantic = _get_semantic_cache()
+        semantic_ns = f"{(request.mode or 'rag')}:{request.user_id}"
+        if semantic is not None:
+            semantic_hit = await asyncio.to_thread(
+                semantic.get, request.question, semantic_ns
+            )
+            if semantic_hit is not None:
+                if trace is not None:
+                    trace.cache_hit = True
+                    trace.extra["cache_layer"] = "semantic"
+                    trace.extra["semantic_similarity"] = semantic.last_similarity
+                    trace.extra["semantic_lookup_ms"] = semantic.last_lookup_ms
+                content = semantic_hit.get("content", "") if isinstance(semantic_hit, dict) else str(semantic_hit or "")
+                image = semantic_hit.get("image", []) if isinstance(semantic_hit, dict) else []
+                references = semantic_hit.get("references", []) if isinstance(semantic_hit, dict) else []
+                chart_json = semantic_hit.get("chart_json") if isinstance(semantic_hit, dict) else None
+                meta = json.dumps(
+                    {"type": "meta", "image": _normalize_images(image), "references": references, "chart_json": chart_json},
+                    ensure_ascii=False,
+                )
+                yield f"data: {meta}\n\n"
+                for i in range(0, len(content), 4):
+                    piece = content[i:i + 4]
+                    data = json.dumps({"type": "content", "text": piece}, ensure_ascii=False)
+                    yield f"data: {data}\n\n"
+                    await asyncio.sleep(0.008)
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                return
+
         queue: asyncio.Queue = asyncio.Queue()
         box: Dict[str, Any] = {}
 
@@ -428,6 +459,8 @@ async def chat_stream(request: ChatRequest, http_request: Request):
                 box["streamed_text"] = "".join(streamed_parts)
                 if cache is not None and cache_key is not None and isinstance(result, dict):
                     cache.set(cache_key, result)
+                if semantic is not None and isinstance(result, dict):
+                    semantic.set(request.question, result, semantic_ns)
                 box["result"] = result
                 queue.put_nowait(("finish", None))
             except Exception as e:  # noqa: BLE001

@@ -89,6 +89,29 @@ class FakePipeline:
         return ("需要补充报告期（2025 年 Q3？）", False)
 
 
+class FakeSemanticCache:
+    """stub 语义缓存：验证 /chat/stream 的命中回放与未命中写回。"""
+
+    def __init__(self, payload: Optional[Dict[str, Any]] = None) -> None:
+        self.payload = payload
+        self.last_similarity = 0.97
+        self.last_lookup_ms = 1.5
+        self.get_calls = 0
+        self.set_calls = 0
+
+    def get(self, question: str, namespace: str = "default") -> Optional[Dict[str, Any]]:
+        self.get_calls += 1
+        return dict(self.payload) if self.payload is not None else None
+
+    def set(self, question: str, payload: Dict[str, Any], namespace: str = "default", embedding: Any = None) -> bool:
+        self.set_calls += 1
+        self.payload = dict(payload)
+        return True
+
+    def stats(self) -> Dict[str, Any]:
+        return {}
+
+
 @pytest.fixture(scope="module")
 def api_env():
     """装配 app.api（首导一次）：替换 core.pipeline 装配函数 + 保证 result/ 存在。"""
@@ -280,6 +303,41 @@ def test_stream_missing_question_422(api_env) -> None:
     client, *_ = api_env
     resp = client.post("/chat/stream", json={"mode": "agent"})
     assert resp.status_code == 422
+
+
+def test_stream_semantic_cache_hit(api_env, monkeypatch) -> None:
+    """语义命中时直接回放，不进入真实检索/生成。"""
+    client, api_module, stub_cfg, stub_pipe = api_env
+    monkeypatch.setattr(stub_cfg, "SEMANTIC_CACHE_ENABLED", True, raising=False)
+    fake = FakeSemanticCache(
+        {"content": "语义缓存答案", "image": [], "references": [], "chart_json": None}
+    )
+    monkeypatch.setattr(api_module, "_semantic_cache", fake, raising=False)
+    before = len(stub_pipe.query_calls)
+
+    resp = client.post("/chat/stream", json={"question": "同义问法", "mode": "rag"})
+    assert resp.status_code == 200
+    events = _sse_events(resp.text)
+    assert "".join(e.get("text", "") for e in events if e["type"] == "content") == "语义缓存答案"
+    assert events[-1]["type"] == "done"
+    assert len(stub_pipe.query_calls) == before
+    assert fake.get_calls == 1
+
+
+def test_stream_semantic_cache_miss_then_set(api_env, monkeypatch) -> None:
+    """语义未命中时走真实链路，并把结果写回缓存。"""
+    client, api_module, stub_cfg, stub_pipe = api_env
+    monkeypatch.setattr(stub_cfg, "SEMANTIC_CACHE_ENABLED", True, raising=False)
+    fake = FakeSemanticCache(None)
+    monkeypatch.setattr(api_module, "_semantic_cache", fake, raising=False)
+    stub_pipe.rag_stream_text = "RAG 答案"
+    stub_pipe.rag_content = "RAG 答案"
+
+    resp = client.post("/chat/stream", json={"question": "首次问法", "mode": "rag"})
+    assert resp.status_code == 200
+    assert fake.get_calls == 1
+    assert fake.set_calls == 1
+    assert fake.payload is not None and fake.payload.get("content") == "RAG 答案"
 
 
 # ── /chat/clarify ─────────────────────────────────────────────────────
