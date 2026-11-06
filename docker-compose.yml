@@ -123,5 +123,5 @@ services:
 
 # 说明：MySQL 默认连宿主实例（host.docker.internal:3306，数据在本地 MySQL 的
 # financial_database）。全新环境没有外部 MySQL 时，可自行补一个 mysql 服务块：
-#   mysql: image mysql:8.0, ports 3307:3306（避开宿主 3306）, MYSQL_ROOT_PASSWORD=123456,
+#   mysql: image mysql:8.0, ports 3307:3306（避开宿主 3306）, MYSQL_ROOT_PASSWORD=<set-your-strong-password>,
 #          并将 backend 的 MYSQL_HOST 改为 mysql、MYSQL_PORT 改为 3306。

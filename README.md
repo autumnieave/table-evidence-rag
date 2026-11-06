@@ -2,7 +2,7 @@
 
 > **30 秒速览**
 > - **业务场景**：财务研报与财报的复杂表格 RAG，核心解决“表格被切碎”与“数字幻觉无法溯源”的痛点。
-> - **硬核指标**：端到端 **P50 从 22.3s 降至 0.26s（提速 85.9 倍）**；表级 **Hit@10 达 87.5%**（MRR 提升至 0.7326）；Claim 支持率 **98.36%（120/122）**。
+> - **硬核指标**：Semantic Cache 命中耗时 **1.66s（相对基线提速约 12.4 倍，n=5）**；表级 **Hit@10 达 87.5%**（MRR 提升至 0.7326）；Claim 支持率 **97.32%（109/112）**。
 > - **架构亮点**：自研 Table Grid 解析、Schema-Aware 前置硬过滤、LangGraph 混合工具调度、Semantic Cache 降本增效、Redis 分布式基建。
 
 本项目以结构保留解析、行级事实、混合检索、Agent 证据选择与 Claim 级评测构成闭环。不仅跑通了算法链路，还完成了服务化交付与高并发降本观测。
@@ -13,10 +13,10 @@
 
 ## 核心指标与工程收益
 
-- **解析与表征**：受控 Gold Set TEDS 1.0（解决跨页/合并单元格），碎片 Chunk 减少 99.4%，建立 Cell-Level Anchors 支撑数字级溯源。
-- **检索与重排**：针对跨期/跨公司噪声，引入 Schema-Aware 前置硬过滤与 Cross-Encoder 两阶段精排，表级 Hit@10 从 25% 提升至 87.5%，MRR@10 从 0.1292 提升至 0.7326。
-- **降本与高并发**：引入 Semantic Cache 拦截重复 Query，免去昂贵的 LLM 生成 Token，端到端 P50 从 22.3s 降至 0.26s（提速 85.9 倍）；基于 Redis+Lua 实现分布式滑动窗口限流。
-- **工程闭环**：基于 Docker Compose 一键编排交付；打通 SSE 流式输出（首字延迟从 38.3s 降至 0.674s）；配套 1086 条离线单测，CI 自动执行。
+- **解析与表征**：受控 Gold Set（10表/142行），简化版 TEDS 1.0（解决跨页/合并单元格），碎片 Chunk 减少 99.4%，建立 Cell-Level Anchors 支撑数字级溯源。
+- **检索与重排**：针对跨期/跨公司噪声，引入 Schema-Aware 前置硬过滤与 Cross-Encoder 两阶段精排，表级 Hit@10 25% -> 75% -> 87.5%，MRR@10 从 0.1292 提升至 0.7326。
+- **降本与高并发**：引入 Semantic Cache 拦截重复 Query，免去昂贵的 LLM 生成 Token，命中耗时 1.66s（相对基线提速约 12.4 倍，n=5）；基于 Redis+Lua 实现分布式滑动窗口限流。
+- **工程闭环**：基于 Docker Compose 一键编排交付；打通 SSE 流式输出（首字延迟降至 3.3s，n=10）；配套 1086 条离线单测，CI 自动执行。
 
 ## 架构图
 
@@ -32,7 +32,7 @@ flowchart LR
         R3 --> R4[qwen3-rerank 两阶段精排]
     end
     subgraph A[Agent 与工具调度层]
-        A1[LangGraph ReAct 状态机] --> A2[研报 RAG Tool]
+        A1[LangGraph supervisor-workers 状态机] --> A2[研报 RAG Tool]
         A1 --> A3[SQL Tool 多层安全拦截]
         A2 --> A4[证据动作: 重写/换表/拒答]
         A3 --> A4
@@ -54,14 +54,14 @@ flowchart LR
    - 基线 Dense+Sparse+RRF 受噪声干扰严重，引入 Schema 实体与年份的强制过滤，大幅收敛候选池。
    - 线上用 qwen3-rerank 对 Top-50 结果重排，压住长尾干扰（消融实验基于 BGE-Reranker，见边界声明）。
 3. **Agent 证据治理与状态路由**：
-   - 基于 LangGraph 构建状态机，当数值口径（指标/期间/单位）不匹配时触发重写/拒答。
+   - LangGraph 状态机（supervisor-workers 多 Agent 编排与意图路由），当数值口径（指标/期间/单位）不匹配时触发重写/拒答。
    - 引入 Intent Routing，将精确查数分发至带安全护栏的 SQL Tool，复杂推理走 RAG。
-   - 引入 Targeted Retry（P50 388ms）替代全局盲搜。
+   - 引入 Targeted Retry（条件触发，均值 388ms，n=5）替代全局盲搜。
 4. **LLM 评测与 Faithfulness 纠偏**：
    - 搭建不合成单一分数的 RAG 四层评测矩阵（引用/答案/对抗/检索）。
-   - 引入 Atomic Claim 分解与规则级证据定位，通过数值单位容差消除比对假阴性。严格核算 Claim 支持率达 98.36%（120/122）。
+   - 引入 Atomic Claim 分解与规则级证据定位，通过数值单位容差消除比对假阴性。严格核算 Claim 支持率达 97.32%（109/112）。
 5. **高并发基建与降本观测**：
-   - **Semantic Cache**：利用 Embedding 相似度在 Redis 中匹配同义 Query，命中后直接返回，免去 LLM 生成，速度提升 85.9 倍。
+   - **Semantic Cache**：利用 Embedding 相似度在 Redis 中匹配同义 Query，命中后直接返回，命中耗时 1.66s（相对基线提速约 12.4 倍，n=5）。
    - **状态外置**：将 LangGraph Checkpoint 由 SQLite 迁移至 Redis，支持多副本无状态扩展与断线重连。
 
 ## 快速开始
