@@ -1,7 +1,19 @@
 # -*- coding: utf-8 -*-
-"""TEDS 简化版：表格解析质量的**分数**指标（替代「通过 / 不通过」二值判定）。
+"""TEDS 表格解析质量评测：标准 HTML 树口径 + 历史简化版对照。
 
-## 指标定义（明确简化了什么）
+## 标准 TEDS（当前主口径）
+
+按论文口径把表格序列化为 ``<table><tr><td>`` 树，使用 APTED 计算树编辑距离：
+
+    TEDS = 1 - EditDist(gold_tree, pred_tree) / max(|gold_tree|, |pred_tree|)
+
+树节点为 ``table`` / ``tr`` / ``td``；单元格节点标签包含 ``rowspan``、``colspan``
+与归一化文本，因此合并几何与单元格内容都会进入编辑距离。插入/删除/重命名
+代价均按 APTED 默认单位代价，不做字符级相似度或数值宽容。
+
+## TEDS 简化版（历史对照，不再作为对外指标）
+
+以下定义仅用于复现 2026-10-16 的旧报告，不宣称与论文 TEDS 同值。
 
 把表格看作三层树 **表 → 行 → 格**，与解析结果计算编辑距离后归一：
 
@@ -65,6 +77,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from apted import APTED
+from apted.helpers import Tree
+from bs4 import BeautifulSoup
 
 _SRC_ROOT = Path(__file__).resolve().parents[2]
 if str(_SRC_ROOT) not in sys.path:
@@ -206,7 +222,7 @@ def stack_rows(view: Dict[str, Any]) -> List[List[str]]:
     return rows
 
 
-def teds(gold: Dict[str, Any], pred: Dict[str, Any]) -> float:
+def legacy_teds(gold: Dict[str, Any], pred: Dict[str, Any]) -> float:
     """计算 TEDS 简化版分数（``gold`` / ``pred`` 均为 ``{headers, rows}``）。"""
     gold_rows = stack_rows(gold)
     pred_rows = stack_rows(pred)
@@ -226,6 +242,117 @@ def teds(gold: Dict[str, Any], pred: Dict[str, Any]) -> float:
     if denom <= 0:
         return 1.0
     return max(0.0, min(1.0, 1.0 - cost / denom))
+
+
+def _view_rows(view: Dict[str, Any]) -> List[List[str]]:
+    """视图 → 实际参与 HTML 序列化的行（含可选表头）。"""
+    rows: List[List[str]] = []
+    if view.get("has_header", True) and view.get("headers"):
+        rows.append([clean_text(cell) for cell in (view.get("headers") or [])])
+    rows.extend([clean_text(cell) for cell in row] for row in (view.get("rows") or []))
+    return rows
+
+
+def _shift_spans(view: Dict[str, Any]) -> List[Dict[str, int]]:
+    """合并单元格坐标 → 含表头后的网格坐标。"""
+    offset = 1 if view.get("has_header", True) and view.get("headers") else 0
+    spans: List[Dict[str, int]] = []
+    for cell in view.get("merged_cells") or []:
+        try:
+            row = int(cell.get("row", 0)) + offset
+            col = int(cell.get("col", 0))
+            rowspan = max(1, int(cell.get("rowspan", 1)))
+            colspan = max(1, int(cell.get("colspan", 1)))
+        except (TypeError, ValueError):
+            continue
+        if row < 0 or col < 0:
+            continue
+        spans.append({"row": row, "col": col, "rowspan": rowspan, "colspan": colspan})
+    return spans
+
+
+def table_view_to_html(view: Dict[str, Any]) -> str:
+    """把 ``{headers, rows, merged_cells}`` 序列化为标准 ``<table>`` HTML。
+
+    合并区域只在左上角输出一个 ``td``，并由该节点携带 ``rowspan`` / ``colspan``；
+    被覆盖的网格位置不再重复输出单元格。这样 HTML 树结构与真实表格几何一致。
+    """
+    rows = _view_rows(view)
+    if not rows:
+        return "<table></table>"
+    width = max([len(row) for row in rows] + [len(view.get("headers") or [])])
+    width = max(width, 1)
+
+    origin: Dict[Tuple[int, int], Dict[str, Any]] = {}
+    covered: set = set()
+    for span in _shift_spans(view):
+        row, col = span["row"], span["col"]
+        if row >= len(rows) or col >= width:
+            continue
+        text = rows[row][col] if col < len(rows[row]) else ""
+        origin[(row, col)] = {**span, "text": text}
+        for rr in range(row, min(len(rows), row + span["rowspan"])):
+            for cc in range(col, min(width, col + span["colspan"])):
+                if (rr, cc) != (row, col):
+                    covered.add((rr, cc))
+
+    html_rows: List[str] = []
+    for row_index, row in enumerate(rows):
+        cells: List[str] = []
+        for col in range(width):
+            if (row_index, col) in covered:
+                continue
+            span = origin.get((row_index, col))
+            text = span["text"] if span else (row[col] if col < len(row) else "")
+            attrs = ""
+            if span:
+                if span["rowspan"] > 1:
+                    attrs += f' rowspan="{span["rowspan"]}"'
+                if span["colspan"] > 1:
+                    attrs += f' colspan="{span["colspan"]}"'
+            cells.append(f"<td{attrs}>{html.escape(text)}</td>")
+        html_rows.append("<tr>" + "".join(cells) + "</tr>")
+    return "<table>" + "".join(html_rows) + "</table>"
+
+
+def html_table_to_tree(html_text: str) -> Tree:
+    """把单个 HTML 表格解析为 APTED 树：``table -> tr -> td``。"""
+    soup = BeautifulSoup(html_text or "", "html.parser")
+    table = soup.find("table")
+    root = Tree("table")
+    if table is None:
+        return root
+    for tr in table.find_all("tr"):
+        row = Tree("tr")
+        for cell in tr.find_all(["td", "th"], recursive=False):
+            tag = cell.name.lower()
+            rowspan = clean_text(cell.get("rowspan", "1")) or "1"
+            colspan = clean_text(cell.get("colspan", "1")) or "1"
+            text = clean_text(cell.get_text(" ", strip=True))
+            row.children.append(Tree(f"{tag}|rowspan={rowspan}|colspan={colspan}|{text}"))
+        root.children.append(row)
+    return root
+
+
+def tree_node_count(tree: Tree) -> int:
+    """树的节点数（table + tr + td）。"""
+    return 1 + sum(tree_node_count(child) for child in getattr(tree, "children", []))
+
+
+def standard_teds(gold: Dict[str, Any], pred: Dict[str, Any]) -> float:
+    """标准 TEDS：HTML 树 + APTED，``1 - edit / max(node_count)``。"""
+    gold_tree = html_table_to_tree(table_view_to_html(gold))
+    pred_tree = html_table_to_tree(table_view_to_html(pred))
+    denominator = max(tree_node_count(gold_tree), tree_node_count(pred_tree))
+    if denominator <= 1:
+        return 1.0
+    distance = float(APTED(gold_tree, pred_tree).compute_edit_distance())
+    return max(0.0, min(1.0, 1.0 - distance / denominator))
+
+
+def teds(gold: Dict[str, Any], pred: Dict[str, Any]) -> float:
+    """当前主口径：标准 HTML 树 TEDS。"""
+    return standard_teds(gold, pred)
 
 
 STRUCTURE_DIMENSIONS: Tuple[str, ...] = ("section_rows", "sub_header_rows", "merged_cells")
@@ -362,6 +489,7 @@ def score_gold_set(
             "headers": entry.get("headers") or [],
             "rows": entry.get("rows") or [],
             "has_header": bool(entry.get("has_header", True)),
+            "merged_cells": entry.get("merged_cells") or [],
         }
         record: Dict[str, Any] = {
             "table_id": table_id,
@@ -373,13 +501,17 @@ def score_gold_set(
         }
         if table is None:
             record["teds"] = None
+            record["teds_simplified"] = None
             record["状态"] = "语料未命中"
             records.append(record)
             continue
         record["pred_rows"] = table.row_count
         record["pred_cols"] = view_cols(table_to_gold_view(table))
         record["caption_match"] = clean_text(entry.get("caption", "")) == clean_text(table.caption)
-        record["teds"] = round(teds(gold_view, table_to_gold_view(table)), 6)
+        pred_view = table_to_gold_view(table)
+        pred_view["merged_cells"] = [dict(c) for c in table.merged_cells]
+        record["teds"] = round(standard_teds(gold_view, pred_view), 6)
+        record["teds_simplified"] = round(legacy_teds(gold_view, table_to_gold_view(table)), 6)
         if any(dim in entry for dim in STRUCTURE_DIMENSIONS):
             structure = structure_similarity(entry, table_to_structure_view(table))
             record["structure"] = structure
@@ -409,6 +541,8 @@ def build_report(records: List[Dict[str, Any]], gold_path: Path) -> Dict[str, An
     for record in scored:
         buckets.setdefault(str(record.get("bucket")), []).append(float(record["teds"]))
     avg = sum(float(r["teds"]) for r in scored) / len(scored) if scored else 0.0
+    simplified = [r for r in records if isinstance(r.get("teds_simplified"), (int, float))]
+    simplified_avg = _mean([float(r["teds_simplified"]) for r in simplified])
     structured = [r for r in records if isinstance(r.get("structure_score"), (int, float))]
     struct_buckets: Dict[str, List[float]] = {}
     for record in structured:
@@ -427,6 +561,7 @@ def build_report(records: List[Dict[str, Any]], gold_path: Path) -> Dict[str, An
             "已打分": len(scored),
             "平均TEDS": round(avg, 6),
             "最低TEDS": round(min((float(r["teds"]) for r in scored), default=0.0), 6),
+            "平均简化版TEDS": round(simplified_avg, 6),
             "gold自检通过数": sum(1 for r in records if r.get("gold_自检_通过")),
             "分桶平均TEDS": {
                 k: round(sum(v) / len(v), 6) for k, v in sorted(buckets.items())
@@ -444,8 +579,8 @@ def build_report(records: List[Dict[str, Any]], gold_path: Path) -> Dict[str, An
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """命令行入口：对 Gold 集打分（TEDS 简化版）并落盘报告。"""
-    parser = argparse.ArgumentParser(description="TEDS 简化版表格质量打分 + Gold 自检")
+    """命令行入口：对 Gold 集计算标准 TEDS（并保留简化版对照）。"""
+    parser = argparse.ArgumentParser(description="标准 TEDS（HTML 树 + APTED）表格质量打分 + Gold 自检")
     parser.add_argument("--gold", type=Path, default=DEFAULT_GOLD, help="Gold 集 json")
     parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS, help="语料根目录")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="报告输出路径")
@@ -469,7 +604,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     stats = report["统计"]
     print("表数 %d  已打分 %d  gold 自检通过 %d/%d" % (
         stats["表数"], stats["已打分"], stats["gold自检通过数"], stats["表数"]))
-    print("平均 TEDS %.6f  最低 %.6f" % (stats["平均TEDS"], stats["最低TEDS"]))
+    print("平均标准 TEDS %.6f  最低 %.6f  简化版对照 %.6f" % (
+        stats["平均TEDS"], stats["最低TEDS"], stats["平均简化版TEDS"]))
     print("平均结构分 %.6f  平均综合分 %.6f  各维度F1=%s" % (
         stats["平均结构分"], stats["平均综合分_teds_x_structure"],
         json.dumps(stats["各维度平均F1"], ensure_ascii=False)))

@@ -1,4 +1,4 @@
-"""table_teds（TEDS 简化版）单元测试：含**注入破坏**，证明分数能区分好坏（纯逻辑、零外部依赖）。"""
+"""table_teds 单元测试：标准 HTML 树 TEDS + 历史简化版对照（纯逻辑、零外部依赖）。"""
 
 import copy
 
@@ -10,14 +10,19 @@ from tools.data_scripts.table_teds import (
     cell_similarity,
     f1_similarity,
     gold_cells_missing_in_raw,
+    html_table_to_tree,
+    legacy_teds,
     pair_similarity,
     parse_number,
     row_cell_cost,
     sequence_cost,
+    standard_teds,
     stack_rows,
     structure_similarity,
+    table_view_to_html,
     table_to_structure_view,
     teds,
+    tree_node_count,
     view_cols,
 )
 
@@ -63,11 +68,12 @@ def test_wrong_number_is_penalised():
     assert teds(GOLD, pred) < 1.0
 
 
-def test_formatted_number_is_accepted():
-    """``1,234`` 与 ``1234`` 视为同一个数（展示位差异不该扣分）。"""
+def test_formatted_number_is_accepted_only_by_legacy_teds():
+    """标准 TEDS 不吞掉展示位差异；历史简版仍保留该宽容口径供对照。"""
     gold = {"headers": ["项目", "值"], "rows": [["营收", "1,234.50"]], "has_header": True}
     pred = {"headers": ["项目", "值"], "rows": [["营收", "1234.5"]], "has_header": True}
-    assert teds(gold, pred) == 1.0
+    assert legacy_teds(gold, pred) == 1.0
+    assert standard_teds(gold, pred) < 1.0
 
 
 def test_percent_suffix_must_match():
@@ -77,14 +83,57 @@ def test_percent_suffix_must_match():
     assert teds(gold, pred) < 1.0
 
 
-def test_gold_empty_header_matches_placeholder():
-    """Gold 该格为空、解析给占位名（``项目`` / ``列N``）视为相同。"""
+def test_gold_empty_header_matches_placeholder_only_in_legacy_teds():
+    """占位表头宽容只属于历史简版；标准 TEDS 按真实文本节点计费。"""
     assert pair_similarity("", "项目") == 1.0
     assert pair_similarity("", "列3") == 1.0
     assert pair_similarity("", "毛利率") < 1.0
     gold = {"headers": ["", "2024A"], "rows": [["营收", "1"]], "has_header": True}
     pred = {"headers": ["项目", "2024A"], "rows": [["营收", "1"]], "has_header": True}
-    assert teds(gold, pred) == 1.0
+    assert legacy_teds(gold, pred) == 1.0
+    assert standard_teds(gold, pred) < 1.0
+
+
+def test_standard_teds_identical_tables_is_one():
+    assert standard_teds(GOLD, _pred()) == 1.0
+
+
+def test_standard_teds_missing_row_is_penalised():
+    pred = _pred(rows=[["营业收入", "100", "120"]])
+    assert 0.0 < standard_teds(GOLD, pred) < 1.0
+
+
+def test_standard_teds_uses_edit_distance_formula():
+    """单格改字：13 个节点（table + 3 tr + 9 td）中 1 个 rename ⇒ 1 - 1/13。"""
+    pred = _pred(rows=[["营业收入", "100", "120"], ["净利润", "10", "13"]])
+    assert standard_teds(GOLD, pred) == pytest.approx(1.0 - 1.0 / 13.0)
+
+
+def test_standard_teds_keeps_rowspan_colspan_in_tree():
+    view = {
+        "headers": ["类型", "产品", "收入"],
+        "rows": [["化学药", "A", "10"], ["化学药", "B", "20"]],
+        "has_header": True,
+        "merged_cells": [{"row": 0, "col": 0, "rowspan": 2, "colspan": 1}],
+    }
+    html_text = table_view_to_html(view)
+    assert 'rowspan="2"' in html_text
+    assert html_text.count("<td") == 8  # 3 表头 + (3 + 2) 数据格；合并覆盖格不重复输出
+    tree = html_table_to_tree(html_text)
+    assert tree_node_count(tree) == 1 + 3 + 8
+    assert standard_teds(view, view) == 1.0
+
+
+def test_standard_teds_span_geometry_change_is_penalised():
+    gold = {
+        "headers": ["类型", "产品", "收入"],
+        "rows": [["化学药", "A", "10"], ["化学药", "B", "20"]],
+        "has_header": True,
+        "merged_cells": [{"row": 0, "col": 0, "rowspan": 2, "colspan": 1}],
+    }
+    pred = copy.deepcopy(gold)
+    pred["merged_cells"] = [{"row": 0, "col": 0, "rowspan": 1, "colspan": 1}]
+    assert standard_teds(gold, pred) < 1.0
 
 
 def test_header_row_excluded_when_no_header():
