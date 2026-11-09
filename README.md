@@ -7,16 +7,16 @@
 
 本项目以结构保留解析、行级事实、混合检索、Agent 证据选择与 Claim 级评测构成闭环。不仅跑通了算法链路，还完成了服务化交付与高并发降本观测。
 
-**技术栈**：Python · FastAPI (SSE) · LangGraph · Qdrant · Redis · Semantic Cache · Cross-Encoder · pytest (1086 单测)
+**技术栈**：Python · FastAPI (SSE) · LangGraph · Qdrant · Redis · Semantic Cache · Cross-Encoder · pytest (1091 单测)
 
-[![CI](https://github.com/autumnieave/table-evidence-rag/actions/workflows/ci.yml/badge.svg)](https://github.com/autumnieave/table-evidence-rag/actions/workflows/ci.yml) [![tests](https://img.shields.io/badge/1086%20tests-passing-brightgreen)]() [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![CI](https://github.com/autumnieave/table-evidence-rag/actions/workflows/ci.yml/badge.svg)](https://github.com/autumnieave/table-evidence-rag/actions/workflows/ci.yml) [![tests](https://img.shields.io/badge/1091%20tests-passing-brightgreen)]() [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 ## 核心指标与工程收益
 
-- **解析与表征**：受控 Gold Set（10表/142行），简化版 TEDS 1.0（解决跨页/合并单元格），碎片 Chunk 减少 99.4%，建立 Cell-Level Anchors 支撑数字级溯源。
+- **解析与表征**：受控 Gold Set（10表/142行），标准 TEDS 评测（基于 HTML 树编辑距离）达 **0.99（0.9945）**，碎片 Chunk 减少 99.4%，建立 Cell-Level Anchors 支撑数字级溯源。
 - **检索与重排**：针对跨期/跨公司噪声，引入 Schema-Aware 前置硬过滤与 Cross-Encoder 两阶段精排，表级 Hit@10 25% -> 75% -> 87.5%，MRR@10 从 0.1292 提升至 0.7326。
 - **降本与高并发**：引入 Semantic Cache 拦截重复 Query，免去昂贵的 LLM 生成 Token，命中耗时 1.66s（相对基线提速约 12.4 倍，n=5）；基于 Redis+Lua 实现分布式滑动窗口限流。
-- **工程闭环**：基于 Docker Compose 一键编排交付；打通 SSE 流式输出（首字延迟降至 3.3s，n=10）；配套 1086 条离线单测，CI 自动执行。
+- **工程闭环**：基于 Docker Compose 一键编排交付；打通 SSE 流式输出（首字延迟降至 3.3s，n=10）；配套 1091 条离线单测，CI 自动执行。
 
 ## 架构图
 
@@ -70,7 +70,7 @@ flowchart LR
 
 ```bash
 pip install -r requirements.txt
-python -m pytest tests/ -q    # 1086 个离线单测，无需 API Key / 数据库
+python -m pytest tests/ -q    # 1091 个离线单测，无需 API Key / 数据库
 ```
 
 ### 完整服务运行
@@ -105,7 +105,7 @@ docker compose up -d --build
 ## 测试与评估
 
 ```bash
-# 运行全部单测 (1086 passed)
+# 运行全部单测 (1091 passed)
 python -m pytest tests/ -q
 
 # 运行评测闭环 (需本地 golden 数据支持)

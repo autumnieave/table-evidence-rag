@@ -27,6 +27,9 @@ pydantic>=2.0.0
 # 数据与校验（SQL 静态校验 / MySQL 编译 / golden set）
 pymysql>=1.1.0
 sqlparse>=0.5.0
+# 表格结构评测 / 压测（离线单测与验收工具）
+apted>=1.0.3                    # 标准 TEDS：HTML 树编辑距离
+locust>=2.47.0                  # 高并发与限流压测
 
 # 潜在冗余（待确认后清理）：langchain（全仓无 import，门面包）、tenacity、sse-starlette、python-multipart
 # 已移除：langchain-dashscope（0 直接 import，且 DashScopeRerank 不依赖它）
