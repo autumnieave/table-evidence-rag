@@ -30,6 +30,10 @@ DEFAULT_QUESTION = "片仔癀2023年肝病用药毛利率是多少？请结合�
 QUESTION = os.getenv("LOCUST_QUESTION", DEFAULT_QUESTION)
 SHARED_USER_ID = os.getenv("LOCUST_USER_ID", "locust-shared-user")
 SUMMARY_PATH = os.getenv("LOCUST_SUMMARY_JSON", "").strip()
+WAIT_MIN_SECONDS = float(os.getenv("LOCUST_WAIT_MIN", "0.1"))
+WAIT_MAX_SECONDS = float(os.getenv("LOCUST_WAIT_MAX", "0.4"))
+if WAIT_MAX_SECONDS < WAIT_MIN_SECONDS:
+    raise ValueError("LOCUST_WAIT_MAX 必须大于等于 LOCUST_WAIT_MIN")
 
 _STARTED_AT = time.time()
 _LOCK = threading.Lock()
@@ -130,7 +134,7 @@ def _write_summary(environment, **kwargs: Any) -> None:
 class ChatUser(HttpUser):
     """共享 user_id 的并发用户，专门验证限流与错误隔离。"""
 
-    wait_time = between(0.1, 0.4)
+    wait_time = between(WAIT_MIN_SECONDS, WAIT_MAX_SECONDS)
 
     def on_start(self) -> None:
         self.headers = {"Content-Type": "application/json"}
