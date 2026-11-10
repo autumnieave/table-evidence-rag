@@ -1,38 +1,54 @@
-"""Redis Stack checkpoint 跨实例恢复测试（无 Redis Stack 时自动跳过）。"""
+"""Offline Redis checkpoint tests; live Redis Stack E2E lives under eval/integration/."""
 
 from __future__ import annotations
 
-import socket
-import uuid
+import importlib
 from typing import TypedDict
 
-import pytest
+from langgraph.checkpoint.memory import InMemorySaver
 
 
-REDIS_HOST = "127.0.0.1"
-REDIS_PORT = 6379
-REDIS_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/0"
-
-
-def _stack_available() -> bool:
-    try:
-        with socket.create_connection((REDIS_HOST, REDIS_PORT), timeout=0.5):
-            return True
-    except OSError:
-        return False
-
-
-pytestmark = pytest.mark.skipif(not _stack_available(), reason="Redis Stack 不可用")
+REDIS_URL = "redis://127.0.0.1:6379/0"
 
 
 class CounterState(TypedDict, total=False):
     count: int
 
 
-def _build_graph(saver):
+class _SharedMemorySaver(InMemorySaver):
+    """Two saver objects share one store to emulate a shared persistent backend."""
+
+    def __init__(self, shared: InMemorySaver) -> None:
+        super().__init__()
+        self.storage = shared.storage
+        self.writes = shared.writes
+        self.blobs = shared.blobs
+
+
+class _FakeRedisConnection:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeRedisSaver:
+    """Only verifies the planner selection branch; no real Redis connection."""
+
+    def __init__(self, redis_url: str) -> None:
+        self.redis_url = redis_url
+        self.setup_called = False
+        self._redis = _FakeRedisConnection()
+
+    def setup(self) -> None:
+        self.setup_called = True
+
+
+def _build_graph(saver: InMemorySaver):
     from langgraph.graph import END, START, StateGraph
 
-    def inc(state):
+    def inc(state: CounterState) -> CounterState:
         return {"count": int(state.get("count", 0)) + 1}
 
     builder = StateGraph(CounterState)
@@ -42,29 +58,27 @@ def _build_graph(saver):
     return builder.compile(checkpointer=saver)
 
 
-def test_redis_checkpoint_restores_across_instances() -> None:
-    from langgraph.checkpoint.redis import RedisSaver
+def test_checkpoint_restores_across_saver_instances_with_shared_store() -> None:
+    """State for one thread_id continues to be readable from a second saver/graph."""
+    shared = InMemorySaver()
+    first = _SharedMemorySaver(shared)
+    config = {"configurable": {"thread_id": "offline-shared-checkpoint"}}
 
-    thread_id = f"test-{uuid.uuid4().hex[:8]}"
-    config = {"configurable": {"thread_id": thread_id}}
-
-    first = RedisSaver(redis_url=REDIS_URL)
-    first.setup()
     graph1 = _build_graph(first)
     assert graph1.invoke({"count": 0}, config)["count"] == 1
     assert graph1.invoke({}, config)["count"] == 2
-    first._redis.close()
 
-    # 新实例（模拟另一进程）读回同一 thread_id 的状态
-    second = RedisSaver(redis_url=REDIS_URL)
-    second.setup()
+    second = _SharedMemorySaver(shared)
     graph2 = _build_graph(second)
     assert graph2.invoke({}, config)["count"] == 3
-    second._redis.close()
 
 
-def test_planner_selects_redis_checkpointer() -> None:
+def test_planner_selects_redis_checkpointer_with_mocked_saver(monkeypatch) -> None:
+    """LangGraphPlanner selects RedisSaver for the redis backend and calls setup."""
     from agents.langgraph_planner import LangGraphPlanner
+
+    redis_module = importlib.import_module("langgraph.checkpoint.redis")
+    monkeypatch.setattr(redis_module, "RedisSaver", _FakeRedisSaver)
 
     class Cfg:
         AGENT_LANGGRAPH_CHECKPOINT = True
@@ -77,13 +91,20 @@ def test_planner_selects_redis_checkpointer() -> None:
     planner._redis_saver = None
     saver = planner._build_checkpointer()
     try:
-        assert saver.__class__.__name__ == "RedisSaver"
+        assert isinstance(saver, _FakeRedisSaver)
+        assert saver.redis_url == REDIS_URL
+        assert saver.setup_called is True
     finally:
         planner.close()
+        assert saver._redis.closed is True
 
 
-def test_multi_agent_selects_redis_checkpointer() -> None:
+def test_multi_agent_selects_redis_checkpointer_with_mocked_saver(monkeypatch) -> None:
+    """The multi-agent planner follows the same Redis selection contract."""
     from agents.langgraph_multi_agent import LangGraphMultiAgentPlanner
+
+    redis_module = importlib.import_module("langgraph.checkpoint.redis")
+    monkeypatch.setattr(redis_module, "RedisSaver", _FakeRedisSaver)
 
     class Cfg:
         AGENT_LANGGRAPH_CHECKPOINT = True
@@ -96,6 +117,9 @@ def test_multi_agent_selects_redis_checkpointer() -> None:
     planner._redis_saver = None
     saver = planner._build_checkpointer()
     try:
-        assert saver.__class__.__name__ == "RedisSaver"
+        assert isinstance(saver, _FakeRedisSaver)
+        assert saver.redis_url == REDIS_URL
+        assert saver.setup_called is True
     finally:
         planner.close()
+        assert saver._redis.closed is True

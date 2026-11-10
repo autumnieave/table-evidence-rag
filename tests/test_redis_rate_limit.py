@@ -1,8 +1,9 @@
-"""Redis 滑动窗口限流单测：假客户端 + 真实 Redis（可用时）。"""
+"""Offline Redis sliding-window tests; live Redis E2E lives under eval/integration/."""
 
 from __future__ import annotations
 
-import uuid
+import fnmatch
+import time
 
 import pytest
 
@@ -14,7 +15,7 @@ from utils.api_security import (
 
 
 class FakeRedis:
-    """按预设序列返回 eval 结果。"""
+    """Returns preset eval results for wrapper-level tests."""
 
     def __init__(self, results):
         self.results = list(results)
@@ -26,6 +27,36 @@ class FakeRedis:
         if isinstance(value, Exception):
             raise value
         return value
+
+
+class SlidingWindowFakeRedis:
+    """Deterministic local implementation of the Lua zset sliding-window contract."""
+
+    def __init__(self) -> None:
+        self.buckets: dict[str, dict[str, int]] = {}
+
+    def eval(self, script, numkeys, key, limit, window_ms, member, now_ms):
+        assert numkeys == 1
+        now = int(now_ms) if str(now_ms) else int(time.time() * 1000)
+        window = int(window_ms)
+        bucket = self.buckets.setdefault(str(key), {})
+        cutoff = now - window
+        for old_member, score in list(bucket.items()):
+            if int(score) <= cutoff:
+                del bucket[old_member]
+        if len(bucket) >= int(limit):
+            oldest = min(bucket.values())
+            retry_ms = max(0, int(oldest) + window - now)
+            return [0, retry_ms, len(bucket)]
+        bucket[str(member)] = now
+        return [1, 0, len(bucket) + 1]
+
+    def scan_iter(self, match: str):
+        return (key for key in self.buckets if fnmatch.fnmatch(key, match))
+
+    def delete(self, *keys: str) -> None:
+        for key in keys:
+            self.buckets.pop(key, None)
 
 
 def test_allow_then_reject_retry_after() -> None:
@@ -62,26 +93,9 @@ def test_factory_falls_back_when_redis_unreachable() -> None:
     assert isinstance(limiter, SlidingWindowRateLimiter)
 
 
-def _redis_client_or_none(url: str):
-    try:
-        import redis  # noqa: PLC0415
-
-        client = redis.Redis.from_url(
-            url, decode_responses=True, socket_connect_timeout=0.5, socket_timeout=1.0
-        )
-        client.ping()
-        return client
-    except Exception:  # noqa: BLE001
-        return None
-
-
-REDIS_URL = "redis://127.0.0.1:6379/15"
-
-
-@pytest.mark.skipif(_redis_client_or_none(REDIS_URL) is None, reason="Redis 不可用")
-def test_real_redis_sliding_window() -> None:
-    client = _redis_client_or_none(REDIS_URL)
-    prefix = f"test:rl:{uuid.uuid4().hex[:8]}"
+def test_redis_sliding_window_lua_semantics() -> None:
+    client = SlidingWindowFakeRedis()
+    prefix = "test:rl:window"
     limiter = RedisSlidingWindowRateLimiter(
         client, limit=3, window_seconds=60, prefix=prefix
     )
@@ -91,16 +105,15 @@ def test_real_redis_sliding_window() -> None:
         assert allowed is False
         assert retry_after == pytest.approx(58.0)
 
-        # 窗口滑过后恢复
+        # The oldest hit expires after 60 seconds, so the window opens again.
         assert limiter.allow("u1", now=1061)[0] is True
     finally:
         limiter.reset()
 
 
-@pytest.mark.skipif(_redis_client_or_none("redis://127.0.0.1:6379/15") is None, reason="Redis 不可用")
-def test_real_redis_namespaces_are_isolated() -> None:
-    client = _redis_client_or_none(REDIS_URL)
-    prefix = f"test:rl:{uuid.uuid4().hex[:8]}"
+def test_redis_namespaces_are_isolated() -> None:
+    client = SlidingWindowFakeRedis()
+    prefix = "test:rl:namespace"
     limiter = RedisSlidingWindowRateLimiter(
         client, limit=1, window_seconds=60, prefix=prefix
     )
@@ -108,5 +121,6 @@ def test_real_redis_namespaces_are_isolated() -> None:
         assert limiter.allow("u1", now=2000)[0] is True
         assert limiter.allow("u1", now=2001)[0] is False
         assert limiter.allow("u2", now=2002)[0] is True
+        assert len(client.buckets) == 2
     finally:
         limiter.reset()
