@@ -33,3 +33,6 @@ locust>=2.47.0                  # 高并发与限流压测
 
 # 潜在冗余（待确认后清理）：langchain（全仓无 import，门面包）、tenacity、sse-starlette、python-multipart
 # 已移除：langchain-dashscope（0 直接 import，且 DashScopeRerank 不依赖它）
+
+# MCP Server（stdio / FastMCP v1）
+mcp>=1.9.4,<2.0.0
