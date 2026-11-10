@@ -21,11 +21,181 @@ import hashlib
 import json
 import logging
 import math
+import re
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, FrozenSet, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+_PERIOD_RE = re.compile(
+    r"(?<!\d)(20\d{2})(?!\d)"
+    r"(?:\s*(?:年\s*(?:第\s*)?([一二三四1-4])\s*季度|(上半年|下半年)|"
+    r"(Q[1-4]|H[1-2]|A|E)(?![A-Za-z])))?",
+    re.IGNORECASE,
+)
+_CN_QUARTER = {"一": "1", "二": "2", "三": "3", "四": "4"}
+
+#: 指标别名 -> 规范化指标族。长别名优先，避免“净利润”被拆成“利润”。
+_METRIC_ALIASES = (
+    ("归属于母公司股东的净利润", "net_profit_parent"),
+    ("归属母公司净利润", "net_profit_parent"),
+    ("归母净利润", "net_profit_parent"),
+    ("扣非净利润", "net_profit"),
+    ("主营业务收入", "revenue"),
+    ("营业总收入", "revenue_total"),
+    ("营业收入", "revenue"),
+    ("销售净利率", "net_margin"),
+    ("归母净利率", "net_margin_parent"),
+    ("净利率", "net_margin"),
+    ("毛利率", "gross_margin"),
+    ("净利润", "net_profit"),
+    ("利润总额", "total_profit"),
+    ("资产负债率", "debt_ratio"),
+    ("净资产收益率", "roe"),
+    ("每股收益", "eps"),
+    ("市盈率", "pe"),
+    ("市净率", "pb"),
+    ("现金流", "cash_flow"),
+    ("复合增长率", "growth"),
+    ("同比增长率", "growth"),
+    ("同比增长", "growth"),
+    ("增长率", "growth"),
+    ("赚了多少钱", "profit_generic"),
+    ("赚多少钱", "profit_generic"),
+    ("营收", "revenue"),
+    ("净利", "net_profit"),
+    ("利润", "profit_generic"),
+    ("盈利", "profit_generic"),
+    ("收入", "revenue"),
+    ("ROIC", "roic"),
+    ("ROE", "roe"),
+    ("EPS", "eps"),
+    ("P/E", "pe"),
+    ("P/B", "pb"),
+)
+_SORTED_METRIC_ALIASES = tuple(
+    sorted(_METRIC_ALIASES, key=lambda item: len(item[0]), reverse=True)
+)
+_ENTITY_PREFIX_NOISE = tuple(sorted(
+    (
+        "根据研报预测", "根据研报", "研报中", "研报里",
+        "帮我查一下", "帮我查询", "帮我分析", "请帮我", "查一下", "看一下",
+        "分析一下", "告诉我", "请问", "查询", "分析",
+    ),
+    key=len,
+    reverse=True,
+))
+
+
+@dataclass(frozen=True)
+class QueryConstraints:
+    """语义缓存硬约束：实体、期间、指标族必须一致。"""
+
+    entity: str
+    periods: FrozenSet[str]
+    metrics: FrozenSet[str]
+
+
+def _metric_tokens(text: str) -> FrozenSet[str]:
+    """抽取问题中的规范指标族，长别名优先并跳过重叠片段。"""
+    lowered = text.lower()
+    occupied: List[tuple] = []
+    tokens = set()
+    for alias, canonical in _SORTED_METRIC_ALIASES:
+        needle = alias.lower()
+        start = 0
+        while True:
+            index = lowered.find(needle, start)
+            if index < 0:
+                break
+            end = index + len(needle)
+            if not any(not (end <= left or index >= right) for left, right in occupied):
+                occupied.append((index, end))
+                tokens.add(canonical)
+            start = index + 1
+    return frozenset(tokens)
+
+
+def _period_tokens(text: str) -> FrozenSet[str]:
+    """抽取年份/季度/半年/A-E 期间 token，用于阻止跨期回放。"""
+    tokens = set()
+    for match in _PERIOD_RE.finditer(text):
+        year = match.group(1)
+        quarter = match.group(2)
+        half = match.group(3)
+        suffix = match.group(4)
+        if quarter:
+            q = _CN_QUARTER.get(quarter, quarter)
+            tokens.add(f"{year}Q{q}")
+        elif half:
+            tokens.add(f"{year}{'H1' if half == '上半年' else 'H2'}")
+        elif suffix:
+            tokens.add(f"{year}{suffix.upper()}")
+        else:
+            tokens.add(year)
+    return frozenset(tokens)
+
+
+def _normalize_entity(prefix: str) -> str:
+    """从指标/期间标记之前提取实体文本；规则保守，提取不到则返回空串。"""
+    value = re.sub(r"[\s，,。；;：:、]+", "", prefix or "")
+    changed = True
+    while changed and value:
+        changed = False
+        for noise in _ENTITY_PREFIX_NOISE:
+            if value.startswith(noise):
+                value = value[len(noise):]
+                changed = True
+                break
+    return value.rstrip("的在于")
+
+
+def extract_query_constraints(question: str) -> QueryConstraints:
+    """提取可用于缓存命中的硬约束；无法识别时对应字段为空。"""
+    text = str(question or "").strip()
+    if not text:
+        return QueryConstraints("", frozenset(), frozenset())
+
+    marker_positions = [match.start() for match in _PERIOD_RE.finditer(text)]
+    lowered = text.lower()
+    for alias, _ in _SORTED_METRIC_ALIASES:
+        index = lowered.find(alias.lower())
+        if index >= 0:
+            marker_positions.append(index)
+    entity = _normalize_entity(text[: min(marker_positions)]) if marker_positions else ""
+    return QueryConstraints(entity, _period_tokens(text), _metric_tokens(text))
+
+
+def _constraints_to_json(constraints: QueryConstraints) -> Dict[str, Any]:
+    return {
+        "entity": constraints.entity,
+        "periods": sorted(constraints.periods),
+        "metrics": sorted(constraints.metrics),
+    }
+
+
+def _constraints_from_entry(entry: Dict[str, Any]) -> QueryConstraints:
+    raw = entry.get("constraints")
+    if isinstance(raw, dict):
+        return QueryConstraints(
+            entity=str(raw.get("entity") or ""),
+            periods=frozenset(str(x) for x in raw.get("periods") or []),
+            metrics=frozenset(str(x) for x in raw.get("metrics") or []),
+        )
+    # 兼容旧缓存条目：没有 constraints 时按原问题即时重算，避免旧条目绕过守卫。
+    return extract_query_constraints(str(entry.get("question") or ""))
+
+
+def constraints_compatible(left: QueryConstraints, right: QueryConstraints) -> bool:
+    """实体、期间、指标族全部一致才允许比较；缺省值也必须对称一致。"""
+    return (
+        left.entity == right.entity
+        and left.periods == right.periods
+        and left.metrics == right.metrics
+    )
 
 
 def cosine_similarity(left: List[float], right: List[float]) -> float:
@@ -104,6 +274,7 @@ class SemanticCache:
             "sets": 0,
             "embedding_errors": 0,
             "evictions": 0,
+            "constraint_rejections": 0,
         }
         self.last_similarity: Optional[float] = None
         self.last_lookup_ms: Optional[float] = None
@@ -152,6 +323,7 @@ class SemanticCache:
         if not question:
             return None
         ns = self._namespace_key(namespace)
+        query_constraints = extract_query_constraints(question)
         embedding = self._embed(question)
         if embedding is None:
             with self._lock:
@@ -161,7 +333,9 @@ class SemanticCache:
 
         now = self._now()
         best_score = -1.0
+        max_score = -1.0
         best_entry: Optional[Dict[str, Any]] = None
+        constraint_rejections = 0
 
         if self._redis is not None:
             try:
@@ -179,6 +353,12 @@ class SemanticCache:
                             self._redis.delete(self._entry_key(ns, eid))
                             continue
                         score = cosine_similarity(embedding, entry.get("embedding") or [])
+                        max_score = max(max_score, score)
+                        if not constraints_compatible(
+                            query_constraints, _constraints_from_entry(entry)
+                        ):
+                            constraint_rejections += 1
+                            continue
                         if score > best_score:
                             best_score = score
                             best_entry = entry
@@ -186,6 +366,7 @@ class SemanticCache:
                 logger.warning("semantic_cache_redis_get_failed error=%s", exc)
                 best_entry = None
                 best_score = -1.0
+                max_score = -1.0
         else:
             with self._lock:
                 bucket = dict(self._memory.get(ns, {}))
@@ -194,6 +375,12 @@ class SemanticCache:
                         self._memory.get(ns, {}).pop(eid, None)
                         continue
                     score = cosine_similarity(embedding, entry.get("embedding") or [])
+                    max_score = max(max_score, score)
+                    if not constraints_compatible(
+                        query_constraints, _constraints_from_entry(entry)
+                    ):
+                        constraint_rejections += 1
+                        continue
                     if score > best_score:
                         best_score = score
                         best_entry = entry
@@ -201,7 +388,9 @@ class SemanticCache:
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         with self._lock:
             self._stats["lookups"] += 1
-            self.last_similarity = round(best_score, 6) if best_score >= 0 else None
+            if constraint_rejections:
+                self._stats["constraint_rejections"] += constraint_rejections
+            self.last_similarity = round(max_score, 6) if max_score >= 0 else None
             self.last_lookup_ms = round(elapsed_ms, 3)
             self.last_question = question
 
@@ -226,6 +415,7 @@ class SemanticCache:
         question = str(question or "").strip()
         if not question or not isinstance(payload, dict):
             return False
+        constraints = extract_query_constraints(question)
         vector = embedding if embedding is not None else self._embed(question)
         if vector is None:
             return False
@@ -237,6 +427,7 @@ class SemanticCache:
             "question": question,
             "embedding": vector,
             "payload": payload,
+            "constraints": _constraints_to_json(constraints),
             "created_at": now,
             "expires_at": (now + self.ttl) if self.ttl > 0 else 0.0,
         }

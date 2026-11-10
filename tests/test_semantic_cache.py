@@ -105,3 +105,29 @@ def test_clear_namespace() -> None:
     assert cache.clear("ns1") == 1
     assert cache.get("a", "ns1") is None
     assert cache.get("b", "ns2") == {"content": "B"}
+
+
+@pytest.mark.parametrize(
+    ("stored_question", "probe_question"),
+    [
+        ("片仔癀2023年利润", "片仔癀2024年利润"),
+        ("片仔癀营收", "片仔癀利润"),
+        ("片仔癀毛利率", "云南白药毛利率"),
+    ],
+)
+def test_financial_constraint_mismatch_never_hits(
+    stored_question: str, probe_question: str
+) -> None:
+    """阈值以上但实体/期间/指标不同，必须被硬约束隔离。"""
+    cache = _cache(
+        {
+            stored_question: [1.0, 0.0, 0.0],
+            probe_question: [0.999, 0.01, 0.0],
+        }
+    )
+    assert cache.set(stored_question, {"content": "must-not-replay"}, "rag:u1") is True
+
+    assert cache.get(probe_question, "rag:u1") is None
+    stats = cache.stats()
+    assert stats["constraint_rejections"] == 1
+    assert stats["last_similarity"] >= 0.92
